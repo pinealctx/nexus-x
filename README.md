@@ -1,130 +1,34 @@
 # nexus-x
 
-Go SDK for building Nexus IM Agents.
-
-## Install
-
-```bash
-go get github.com/pinealctx/nexus-x
-```
-
-## Quick Start
-
-```go
-package main
-
-import (
-    "context"
-    "net/http"
-
-    "charm.land/fantasy"
-    "charm.land/fantasy/providers/anthropic"
-    "github.com/pinealctx/nexus-x/agentic"
-    "github.com/pinealctx/nexus-x/agentic/tools"
-    "github.com/pinealctx/nexus-x/client"
-)
-
-func main() {
-    // 1. Create Nexus client.
-    c := client.New("nxa_your_token", "https://nexus.example.com",
-        client.WithSecretKey("your_secret_key"),
-    )
-
-    // 2. Create Fantasy LLM agent with Nexus tools.
-    provider, _ := anthropic.New()
-    model, _ := provider.LanguageModel(context.Background(), "claude-sonnet-4-20250514")
-    agent := fantasy.NewAgent(model,
-        fantasy.WithTools(tools.BasicTools(c)...),
-    )
-
-    // 3. Build engine.
-    engine, _ := agentic.NewEngine(
-        agentic.WithAgent(agent),
-        agentic.WithRouter(agentic.NewRouter()),
-        agentic.WithSystemPrompt("You are a helpful assistant."),
-    )
-
-    // 4. Start webhook server.
-    http.Handle("/webhook", c.WebhookHandler(engine.Handle))
-    http.ListenAndServe(":8080", nil)
-}
-```
+Nexus 生态公共 Go 库。提供配置加载、日志、Proto 工具、Adaptive Card 构建器，以及 Agent 引擎和 IM 客户端封装。
 
 ## Packages
 
 | Package | Description |
 |---------|-------------|
-| `client` | Nexus IM client — Channel implementation, WebSocket, Webhook, all Connect RPC services via `Services()` |
-| `agentic` | Agent engine — Router, Middleware, Memory, Channel interface, convenience send functions |
-| `agentic/tools` | Built-in LLM tools — messaging, queries, groups, media (Fantasy AgentTool) |
-| `adaptivecard` | Adaptive Card type-safe builder (zero deps) |
-| `nxconfig` | Config loading — Source abstraction, YAML/JSON auto-detect, Cobra flags, TLS |
-| `nxconfig/awssm` | AWS Secrets Manager config source |
-| `nxlog` | Global structured logger (zap) |
-| `nxproto` | Proto utilities — sensitive field redaction, Connect RPC interceptor, error re-export |
-| `nxutil` | Pure utility functions — conversation ID encoding, HMAC, time (zero deps) |
+| `nxutil` | 纯工具函数 — 会话 ID 编码、HMAC、时间（零外部依赖） |
+| `nxconfig` | 配置加载 — Source 抽象、YAML/JSON 自动检测、Cobra flags、TLS |
+| `nxconfig/awssm` | AWS Secrets Manager 配置源 |
+| `nxlog` | 全局结构化日志（zap 封装） |
+| `nxproto` | Proto 工具 — 敏感字段脱敏、Connect RPC 拦截器、错误码重导出（nxerr） |
+| `adaptivecard` | Adaptive Card 类型安全构建器（零外部依赖） |
+| `agentic` | Agent 引擎 — Engine、Router、Middleware、Memory、Channel 接口、安全（SSRF/凭证） |
+| `agentic/tools` | 内置 LLM 工具 — 消息收发、历史查询、群组管理、媒体操作，按层级分组（Basic/Query/Group/Media/All） |
+| `agentic/llmconfig` | LLM 配置类型 — 模型注册表、配置加载 |
+| `client` | Nexus IM 客户端 — 实现 agentic.Channel，封装 Webhook/WebSocket 接收、全部 Connect RPC 服务、Mini App initData 校验 |
 
-## Agent Tools
+## 依赖关系
 
-LLM tools let the model interact with Nexus IM through tool calling. Import individually or by tier:
-
-```go
-// Individual tools
-fantasy.WithTools(
-    tools.SendText(c),
-    tools.GetMessageHistory(c),
-    tools.GetGroupInfo(c),
-)
-
-// By tier
-fantasy.WithTools(tools.BasicTools(c)...)    // send, edit, reply, card
-fantasy.WithTools(tools.QueryTools(c)...)    // history, conversation, search
-fantasy.WithTools(tools.GroupTools(c)...)    // group info, members
-fantasy.WithTools(tools.MediaTools(c)...)    // image, file, download
-fantasy.WithTools(tools.AllTools(c)...)      // everything
+```
+nxutil          ← 零依赖（仅 stdlib）
+nxconfig        ← yaml.v3, cobra
+nxlog           ← zap
+nxproto         ← nexus-proto, zap, connect
+adaptivecard    ← 零依赖（仅 encoding/json）
+agentic         ← nexus-proto, fantasy, adaptivecard
+client          ← nexus-proto, connect, nxutil, agentic, websocket, redis
 ```
 
-## Middleware
+## 许可证
 
-```go
-engine, _ := agentic.NewEngine(
-    agentic.WithMiddleware(
-        agentic.AgentFilterMiddleware(selfID),  // private: all, group: @mention only
-        agentic.DedupMiddleware(dedup),
-        agentic.RateLimitMiddleware(limiter, nil),
-        agentic.LoggingMiddleware(),
-        agentic.RecoveryMiddleware(),
-    ),
-    // ...
-)
-```
-
-## Config Loading
-
-```go
-// File only
-nxconfig.RegisterFlags(cmd)
-nxconfig.LoadFromFlags(ctx, cmd, &cfg)
-
-// With AWS Secrets Manager fallback
-awssm.RegisterFlags(cmd)
-nxconfig.LoadFromFlags(ctx, cmd, &cfg, awssm.SourceFromFlags(cmd))
-
-// Programmatic
-nxconfig.Load(ctx, &cfg, nxconfig.NewFileSource("config.yaml"))
-nxconfig.Load(ctx, &cfg, nxconfig.NewEnvSource("APP_CONFIG"))
-```
-
-## Direct RPC Access
-
-For operations not covered by high-level methods, use the underlying Connect RPC clients:
-
-```go
-resp, err := c.Services().Groups.GetGroupInfo(ctx, connect.NewRequest(&apiv1.GetGroupInfoRequest{
-    GroupId: 42,
-}))
-```
-
-## License
-
-MIT
+私有项目。
