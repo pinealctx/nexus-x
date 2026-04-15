@@ -5,39 +5,120 @@ import (
 	"strings"
 )
 
-// Router dispatches incoming updates to slash commands, card action handlers,
-// or the LLM fallback. It does NOT contain security/rate-limit logic — those
-// belong in middleware.
+// Router dispatches incoming updates to slash commands, keyword rules,
+// card action handlers, or the LLM fallback. It does NOT contain
+// security/rate-limit logic — those belong in middleware.
+//
+// Routing priority:
+//  1. CardAction → verb-based handler → card default → LLM fallback
+//  2. Slash command → registered command handler
+//  3. Keyword rule → first matching rule wins (registration order)
+//  4. Everything else → LLM fallback
 type Router struct {
 	commands    map[string]Command
+	keywords    []KeywordRule
 	cardActions map[string]Handler // keyed by verb
 	llmHandler  Handler
 	cardDefault Handler // fallback for unmatched card actions
 }
 
-// NewRouter creates a Router with the given LLM fallback handler and commands.
-// If llmHandler is nil, the Engine will auto-bind its RunLLM method during NewEngine.
-func NewRouter(llmHandler Handler, cmds ...Command) *Router {
-	m := make(map[string]Command, len(cmds))
-	for _, c := range cmds {
-		m[strings.ToLower(c.Name)] = c
-	}
-	return &Router{
-		commands:    m,
-		cardActions: make(map[string]Handler),
-		llmHandler:  llmHandler,
+// KeywordRule defines a keyword-based auto-reply that bypasses LLM.
+// Rules are evaluated in registration order; the first match wins.
+type KeywordRule struct {
+	// Match returns true if this rule should handle the given text.
+	Match func(text string) bool
+
+	// Handler processes the matched update.
+	Handler Handler
+}
+
+// RouterOption configures a Router.
+type RouterOption func(*Router)
+
+// WithCommands registers slash commands.
+func WithCommands(cmds ...Command) RouterOption {
+	return func(r *Router) {
+		for _, c := range cmds {
+			r.commands[strings.ToLower(c.Name)] = c
+		}
 	}
 }
 
+// WithLLMHandler sets a custom LLM fallback handler.
+// If not set, Engine auto-binds its RunLLM method during NewEngine.
+func WithLLMHandler(h Handler) RouterOption {
+	return func(r *Router) { r.llmHandler = h }
+}
+
+// WithCardAction registers a handler for a specific card action verb.
+func WithCardAction(verb string, handler Handler) RouterOption {
+	return func(r *Router) { r.cardActions[verb] = handler }
+}
+
+// WithCardActionDefault sets a fallback handler for unmatched card action verbs.
+func WithCardActionDefault(handler Handler) RouterOption {
+	return func(r *Router) { r.cardDefault = handler }
+}
+
+// WithKeyword registers a keyword rule with a custom matcher.
+// Rules are evaluated in registration order; the first match wins.
+func WithKeyword(match func(string) bool, handler Handler) RouterOption {
+	return func(r *Router) {
+		r.keywords = append(r.keywords, KeywordRule{Match: match, Handler: handler})
+	}
+}
+
+// WithKeywordExact registers an exact-match keyword rule (case-insensitive, trimmed).
+func WithKeywordExact(keyword string, handler Handler) RouterOption {
+	lower := strings.ToLower(strings.TrimSpace(keyword))
+	return WithKeyword(func(text string) bool {
+		return strings.ToLower(strings.TrimSpace(text)) == lower
+	}, handler)
+}
+
+// WithKeywordContains registers a contains-match keyword rule (case-insensitive).
+func WithKeywordContains(keyword string, handler Handler) RouterOption {
+	lower := strings.ToLower(keyword)
+	return WithKeyword(func(text string) bool {
+		return strings.Contains(strings.ToLower(text), lower)
+	}, handler)
+}
+
+// WithKeywordPrefix registers a prefix-match keyword rule (case-insensitive, trimmed).
+func WithKeywordPrefix(prefix string, handler Handler) RouterOption {
+	lower := strings.ToLower(strings.TrimSpace(prefix))
+	return WithKeyword(func(text string) bool {
+		return strings.HasPrefix(strings.ToLower(strings.TrimSpace(text)), lower)
+	}, handler)
+}
+
+// NewRouter creates a Router with the given options.
+//
+//	router := agentic.NewRouter(
+//	    agentic.WithCommands(helpCmd, pingCmd),
+//	    agentic.WithKeywordExact("你好", greetHandler),
+//	    agentic.WithKeywordContains("价格", priceHandler),
+//	)
+func NewRouter(opts ...RouterOption) *Router {
+	r := &Router{
+		commands:    make(map[string]Command),
+		cardActions: make(map[string]Handler),
+	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
+}
+
 // OnCardAction registers a handler for a specific card action verb.
-// When a CardAction with this verb arrives, the handler is called instead of LLM.
+// Returns the Router for chaining. Prefer WithCardAction for construction-time setup.
 func (r *Router) OnCardAction(verb string, handler Handler) *Router {
 	r.cardActions[verb] = handler
 	return r
 }
 
 // OnCardActionDefault sets a fallback handler for card actions with unregistered verbs.
-// If not set, unmatched card actions go to the LLM handler.
+// Returns the Router for chaining. Prefer WithCardActionDefault for construction-time setup.
 func (r *Router) OnCardActionDefault(handler Handler) *Router {
 	r.cardDefault = handler
 	return r
@@ -48,7 +129,8 @@ func (r *Router) OnCardActionDefault(handler Handler) *Router {
 // Routing priority:
 //  1. CardAction → verb-based handler → card default → LLM fallback
 //  2. Slash command → registered command handler
-//  3. Everything else → LLM fallback
+//  3. Keyword rule → first matching rule (registration order)
+//  4. Everything else → LLM fallback
 func (r *Router) Handle(ctx context.Context, update *IncomingUpdate) error {
 	// Card action routing.
 	if update.CardAction != nil {
@@ -67,7 +149,14 @@ func (r *Router) Handle(ctx context.Context, update *IncomingUpdate) error {
 		if cmd, found := r.commands[name]; found {
 			return cmd.Handler(ctx, update)
 		}
-		// Unknown command — fall through to LLM.
+		// Unknown command — fall through to keyword / LLM.
+	}
+
+	// Keyword routing.
+	for i := range r.keywords {
+		if r.keywords[i].Match(update.Text) {
+			return r.keywords[i].Handler(ctx, update)
+		}
 	}
 
 	return r.llmHandler(ctx, update)
@@ -80,6 +169,13 @@ func (r *Router) Commands() []Command {
 		cmds = append(cmds, c)
 	}
 	return cmds
+}
+
+// Keywords returns all registered keyword rules.
+func (r *Router) Keywords() []KeywordRule {
+	out := make([]KeywordRule, len(r.keywords))
+	copy(out, r.keywords)
+	return out
 }
 
 // parseCommand extracts the command name from a message like "/help arg1".

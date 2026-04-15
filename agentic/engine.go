@@ -18,6 +18,7 @@ import (
 type Engine struct {
 	agentID  string
 	agent    fantasy.Agent
+	agents   map[string]fantasy.Agent // named agents for multi-model routing
 	router   *Router
 	memory   Memory
 	events   EventHandler
@@ -41,9 +42,39 @@ func WithAgentID(id string) EngineOption {
 	return func(e *Engine) { e.agentID = id }
 }
 
-// WithAgent sets the Fantasy agent. Required.
+// WithAgent sets the default Fantasy agent. Required.
 func WithAgent(agent fantasy.Agent) EngineOption {
 	return func(e *Engine) { e.agent = agent }
+}
+
+// NamedAgent pairs a name with a Fantasy Agent for multi-model routing.
+type NamedAgent struct {
+	Name  string
+	Agent fantasy.Agent
+}
+
+// WithAgents registers named agents for multi-model routing.
+// Use LLMWithAgent("name") in RunLLM/CallLLM to select a specific agent.
+//
+//	engine, _ := agentic.NewEngine(
+//	    agentic.WithAgent(sonnetAgent),
+//	    agentic.WithAgents(
+//	        agentic.NamedAgent{Name: "fast", Agent: haikuAgent},
+//	        agentic.NamedAgent{Name: "smart", Agent: opusAgent},
+//	    ),
+//	)
+//
+//	// In a handler:
+//	engine.RunLLM(ctx, update, agentic.LLMWithAgent("fast"))
+func WithAgents(agents ...NamedAgent) EngineOption {
+	return func(e *Engine) {
+		if e.agents == nil {
+			e.agents = make(map[string]fantasy.Agent, len(agents))
+		}
+		for _, a := range agents {
+			e.agents[a.Name] = a.Agent
+		}
+	}
 }
 
 // WithRouter sets the command router. Required.
@@ -134,11 +165,24 @@ func NewEngine(opts ...EngineOption) (*Engine, error) {
 	return e, nil
 }
 
-// Agent returns the underlying Fantasy agent for direct access.
+// Agent returns the default Fantasy agent.
 func (e *Engine) Agent() fantasy.Agent { return e.agent }
+
+// AgentByName returns a named agent, or the default if not found.
+func (e *Engine) AgentByName(name string) fantasy.Agent { return e.resolveAgent(name) }
 
 // Memory returns the configured Memory, or nil if not set.
 func (e *Engine) Memory() Memory { return e.memory }
+
+// resolveAgent returns the named agent if it exists, otherwise the default.
+func (e *Engine) resolveAgent(name string) fantasy.Agent {
+	if name != "" && e.agents != nil {
+		if a, ok := e.agents[name]; ok {
+			return a
+		}
+	}
+	return e.agent
+}
 
 // Close performs graceful shutdown.
 func (e *Engine) Close() error { return nil }
@@ -168,6 +212,7 @@ type LLMResult struct {
 type LLMOption func(*llmConfig)
 
 type llmConfig struct {
+	agentName   string // named agent to use (empty = default)
 	temperature *float64
 	maxTokens   *int64
 	extraTools  []fantasy.AgentTool
@@ -175,6 +220,12 @@ type llmConfig struct {
 	prepareStep fantasy.PrepareStepFunction
 	activeTools []string
 	extraMsgs   []fantasy.Message
+}
+
+// LLMWithAgent selects a named agent registered via WithAgents.
+// If the name is not found, the default agent is used.
+func LLMWithAgent(name string) LLMOption {
+	return func(c *llmConfig) { c.agentName = name }
 }
 
 // LLMWithTemperature overrides temperature for this call.
@@ -259,7 +310,8 @@ func (e *Engine) CallLLM(ctx context.Context, update *IncomingUpdate, opts ...LL
 
 	// 4. Call Fantasy agent.
 	call := e.buildAgentCall(systemPrompt, history, cfg)
-	result, err := e.agent.Generate(ctx, call)
+	selectedAgent := e.resolveAgent(cfg.agentName)
+	result, err := selectedAgent.Generate(ctx, call)
 	if err != nil {
 		e.events.OnError(ctx, err)
 		if e.errorFn != nil {
@@ -354,15 +406,15 @@ func toFantasyMessage(m Message) fantasy.Message {
 		parts := make([]fantasy.MessagePart, 0, len(m.Parts))
 		for _, p := range m.Parts {
 			switch p.Type {
-			case "text":
+			case MessagePartTypeText:
 				parts = append(parts, fantasy.TextPart{Text: p.Text})
-			case "tool_call":
+			case MessagePartTypeToolCall:
 				parts = append(parts, fantasy.ToolCallPart{
 					ToolCallID: p.ToolCallID,
 					ToolName:   p.ToolName,
 					Input:      p.Input,
 				})
-			case "tool_result":
+			case MessagePartTypeToolResult:
 				parts = append(parts, fantasy.ToolResultPart{
 					ToolCallID: p.ToolCallID,
 					Output:     toolResultOutput(p),
@@ -405,17 +457,17 @@ func fromFantasyMessage(m fantasy.Message) Message {
 		switch p := part.(type) {
 		case fantasy.TextPart:
 			textBuilder.WriteString(p.Text)
-			parts = append(parts, MessagePart{Type: "text", Text: p.Text})
+			parts = append(parts, MessagePart{Type: MessagePartTypeText, Text: p.Text})
 		case fantasy.ToolCallPart:
 			parts = append(parts, MessagePart{
-				Type:       "tool_call",
+				Type:       MessagePartTypeToolCall,
 				ToolCallID: p.ToolCallID,
 				ToolName:   p.ToolName,
 				Input:      p.Input,
 			})
 		case fantasy.ToolResultPart:
 			mp := MessagePart{
-				Type:       "tool_result",
+				Type:       MessagePartTypeToolResult,
 				ToolCallID: p.ToolCallID,
 			}
 			if p.Output != nil {
@@ -431,7 +483,7 @@ func fromFantasyMessage(m fantasy.Message) Message {
 		default:
 			if tp, ok := fantasy.AsMessagePart[fantasy.TextPart](part); ok {
 				textBuilder.WriteString(tp.Text)
-				parts = append(parts, MessagePart{Type: "text", Text: tp.Text})
+				parts = append(parts, MessagePart{Type: MessagePartTypeText, Text: tp.Text})
 			}
 		}
 	}
@@ -440,7 +492,7 @@ func fromFantasyMessage(m fantasy.Message) Message {
 
 	hasNonText := false
 	for _, p := range parts {
-		if p.Type != "text" {
+		if p.Type != MessagePartTypeText {
 			hasNonText = true
 			break
 		}

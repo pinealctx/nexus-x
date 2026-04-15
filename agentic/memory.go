@@ -37,20 +37,34 @@ type Message struct {
 	Parts []MessagePart `json:"parts,omitempty"`
 }
 
+// MessagePartType identifies the kind of content in a MessagePart.
+type MessagePartType string
+
+const (
+	// MessagePartTypeText represents a plain text part.
+	MessagePartTypeText MessagePartType = "text"
+
+	// MessagePartTypeToolCall represents a tool invocation by the LLM.
+	MessagePartTypeToolCall MessagePartType = "tool_call"
+
+	// MessagePartTypeToolResult represents the result of a tool execution.
+	MessagePartTypeToolResult MessagePartType = "tool_result"
+)
+
 // MessagePart represents a single part of a message.
 // This is a simplified, JSON-serializable representation of Fantasy's MessagePart.
 type MessagePart struct {
-	Type string `json:"type"` // "text", "tool_call", "tool_result"
+	Type MessagePartType `json:"type"`
 
-	// Text content (type="text").
+	// Text content (type=MessagePartTypeText).
 	Text string `json:"text,omitempty"`
 
-	// Tool call fields (type="tool_call").
+	// Tool call fields (type=MessagePartTypeToolCall).
 	ToolCallID string `json:"tool_call_id,omitempty"`
 	ToolName   string `json:"tool_name,omitempty"`
 	Input      string `json:"input,omitempty"` // JSON string
 
-	// Tool result fields (type="tool_result").
+	// Tool result fields (type=MessagePartTypeToolResult).
 	Output  string `json:"output,omitempty"`
 	IsError bool   `json:"is_error,omitempty"`
 }

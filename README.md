@@ -18,6 +18,7 @@ import (
     "net/http"
 
     "charm.land/fantasy"
+    "charm.land/fantasy/providers/anthropic"
     "github.com/pinealctx/nexus-x/agentic"
     "github.com/pinealctx/nexus-x/agentic/tools"
     "github.com/pinealctx/nexus-x/client"
@@ -30,6 +31,8 @@ func main() {
     )
 
     // 2. Create Fantasy LLM agent with Nexus tools.
+    provider, _ := anthropic.New()
+    model, _ := provider.LanguageModel(context.Background(), "claude-sonnet-4-20250514")
     agent := fantasy.NewAgent(model,
         fantasy.WithTools(tools.BasicTools(c)...),
     )
@@ -37,7 +40,7 @@ func main() {
     // 3. Build engine.
     engine, _ := agentic.NewEngine(
         agentic.WithAgent(agent),
-        agentic.WithRouter(agentic.NewRouter(nil)),
+        agentic.WithRouter(agentic.NewRouter()),
         agentic.WithSystemPrompt("You are a helpful assistant."),
     )
 
