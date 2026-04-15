@@ -1,7 +1,6 @@
 package client
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -75,15 +74,12 @@ func (c *Client) convertSnUpdate(sn *sharedv1.SnUpdate) *agentic.IncomingUpdate 
 		return nil
 	}
 
-	text := extractText(msg.GetBody())
-
 	return &agentic.IncomingUpdate{
+		Envelope:       msg,
 		UserID:         msg.GetSenderId(),
 		ConversationID: msg.GetConversationId(),
 		MessageID:      msg.GetMessageId(),
-		Type:           protoMessageType(msg.GetBody()),
-		Text:           text,
-		RawBody:        msg.GetBody(),
+		Text:           extractText(msg.GetBody()),
 		Channel:        c,
 	}
 }
@@ -102,25 +98,12 @@ func (c *Client) convertNonSnUpdate(nsn *sharedv1.NonSnUpdate) *agentic.Incoming
 		return nil
 	}
 
-	var data map[string]any
-	if payload.ActionData != "" {
-		_ = json.Unmarshal([]byte(payload.ActionData), &data)
-	}
-	verb, _ := data["verb"].(string)
-
 	return &agentic.IncomingUpdate{
+		CardAction:     payload,
 		UserID:         payload.GetSenderId(),
 		ConversationID: payload.GetConversationId(),
 		MessageID:      payload.GetMessageId(),
 		Channel:        c,
-		CardAction: &agentic.CardAction{
-			ActionID:       payload.GetActionId(),
-			Verb:           verb,
-			UserID:         payload.GetSenderId(),
-			ConversationID: payload.GetConversationId(),
-			MessageID:      payload.GetMessageId(),
-			Data:           data,
-		},
 	}
 }
 
@@ -139,30 +122,4 @@ func extractText(body *sharedv1.MessageBody) string {
 		}
 	}
 	return ""
-}
-
-func protoMessageType(body *sharedv1.MessageBody) agentic.MessageType {
-	if body == nil {
-		return agentic.MessageTypeUnknown
-	}
-	switch body.Type {
-	case sharedv1.MessageType_MESSAGE_TYPE_TEXT:
-		return agentic.MessageTypeText
-	case sharedv1.MessageType_MESSAGE_TYPE_IMAGE:
-		return agentic.MessageTypeImage
-	case sharedv1.MessageType_MESSAGE_TYPE_AUDIO:
-		return agentic.MessageTypeAudio
-	case sharedv1.MessageType_MESSAGE_TYPE_VIDEO:
-		return agentic.MessageTypeVideo
-	case sharedv1.MessageType_MESSAGE_TYPE_FILE:
-		return agentic.MessageTypeFile
-	case sharedv1.MessageType_MESSAGE_TYPE_MARKDOWN:
-		return agentic.MessageTypeMarkdown
-	case sharedv1.MessageType_MESSAGE_TYPE_CARD:
-		return agentic.MessageTypeCard
-	case sharedv1.MessageType_MESSAGE_TYPE_STREAM:
-		return agentic.MessageTypeStream
-	default:
-		return agentic.MessageTypeUnknown
-	}
 }

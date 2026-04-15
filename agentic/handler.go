@@ -1,73 +1,48 @@
 package agentic
 
-import "context"
+import (
+	"context"
 
-// MessageType identifies the kind of incoming message.
-// Mirrors the platform's message type enum without importing proto.
-type MessageType int8
-
-const (
-	MessageTypeUnknown  MessageType = 0
-	MessageTypeText     MessageType = 1
-	MessageTypeImage    MessageType = 2
-	MessageTypeAudio    MessageType = 3
-	MessageTypeVideo    MessageType = 4
-	MessageTypeFile     MessageType = 5
-	MessageTypeMarkdown MessageType = 6
-	MessageTypeCard     MessageType = 7
-	MessageTypeStream   MessageType = 8
+	sharedv1 "github.com/pinealctx/nexus-proto/gen/go/shared/v1"
 )
 
-// IncomingUpdate represents an inbound event from a conversation platform.
-// It carries the raw event data plus a reference to the Channel for replies.
+// IncomingUpdate represents an inbound event from Nexus IM.
+// It is a superset of the proto types — the original proto is always
+// available via Envelope / CardAction, plus framework-level fields
+// (Channel, Metadata) and convenience fields extracted from proto.
 type IncomingUpdate struct {
-	// UserID identifies the user who triggered this update.
-	UserID int32
+	// ── Original proto (complete, never loses information) ──
 
-	// ConversationID identifies the conversation context.
-	ConversationID int64
+	// Envelope is the full message envelope for message events.
+	// Nil for non-message events (e.g. CardAction).
+	Envelope *sharedv1.MessageEnvelope
 
-	// MessageID is the platform-specific message identifier (for dedup).
-	MessageID int64
+	// CardAction is the card action payload for Action.Submit events.
+	// Nil for message events.
+	CardAction *sharedv1.CardActionPayload
 
-	// Type is the message type (text, image, markdown, card, etc.).
-	// Zero value (MessageTypeUnknown) for non-message events like card actions.
-	Type MessageType
-
-	// Text is the message text content.
-	// For TEXT/MARKDOWN messages, this is the full text.
-	// For other types, this may be empty or contain a text representation.
-	Text string
+	// ── Framework-level fields (not in proto) ──
 
 	// Channel is the outbound channel for sending replies.
 	Channel Channel
 
-	// CardAction holds card action data if this update is a card callback.
-	CardAction *CardAction
-
-	// RawBody holds the platform-specific raw message body.
-	// For Nexus, this is *sharedv1.MessageBody.
-	// Allows advanced agents to access media, entities, etc.
-	RawBody any
-
-	// Metadata holds arbitrary platform-specific data.
+	// Metadata holds arbitrary data that middleware can attach.
 	Metadata map[string]any
-}
 
-// CardAction represents a user interaction with a structured card.
-type CardAction struct {
-	// ActionID is the server-assigned action identifier.
-	ActionID string
-	// Verb is the action verb (from Action.Submit's id/verb property).
-	Verb string
-	// UserID is the user who triggered the action.
+	// ── Convenience fields (extracted from proto) ──
+
+	// UserID is the sender (from Envelope.SenderId or CardAction.SenderId).
 	UserID int32
-	// ConversationID is the conversation containing the card.
+
+	// ConversationID is the conversation context.
 	ConversationID int64
-	// MessageID is the card message ID.
+
+	// MessageID is the message identifier.
 	MessageID int64
-	// Data holds the parsed action_data JSON.
-	Data map[string]any
+
+	// Text is the text content extracted from TEXT/MARKDOWN message bodies.
+	// Empty for other message types and CardAction events.
+	Text string
 }
 
 // Handler processes an incoming update.

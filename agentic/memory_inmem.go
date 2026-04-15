@@ -9,9 +9,9 @@ import (
 // InMemoryMemory is a simple in-memory Memory implementation for development and testing.
 // It is not persistent and not safe for production use with multiple processes.
 type InMemoryMemory struct {
-	mu       sync.RWMutex
-	store    map[string][]Message
-	maxMsgs  int
+	mu         sync.RWMutex
+	store      map[string][]Message
+	maxMsgs    int
 	summarizer Summarizer
 }
 

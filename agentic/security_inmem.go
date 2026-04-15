@@ -8,15 +8,15 @@ import (
 
 // InMemoryRateLimiter is a simple token-bucket rate limiter for development and testing.
 type InMemoryRateLimiter struct {
-	mu       sync.Mutex
-	buckets  map[int32]*bucket
-	rate     int           // max requests per window
-	window   time.Duration // sliding window duration
+	mu      sync.Mutex
+	buckets map[int32]*bucket
+	rate    int           // max requests per window
+	window  time.Duration // sliding window duration
 }
 
 type bucket struct {
-	count    int
-	resetAt  time.Time
+	count   int
+	resetAt time.Time
 }
 
 // NewInMemoryRateLimiter creates a rate limiter that allows `rate` requests per `window`.

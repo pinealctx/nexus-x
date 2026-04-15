@@ -11,6 +11,10 @@ import (
 
 // Engine is the central coordinator of the conversational agent framework.
 // It wires together the Router, middleware chain, Memory, and Fantasy Agent.
+//
+// Engine only orchestrates — it does NOT send messages. LLM sends messages
+// through tools (e.g. send_text, send_card). Engine manages the pipeline:
+// receive update → middleware → route → LLM call → save memory.
 type Engine struct {
 	agentID  string
 	agent    fantasy.Agent
@@ -20,7 +24,7 @@ type Engine struct {
 	mws      []Middleware
 	handler  Handler // compiled handler (middleware + router)
 	systemFn func(ctx context.Context, update *IncomingUpdate) string
-	errorFn  func(ctx context.Context, ch Channel, convID int64, err error) error
+	errorFn  func(ctx context.Context, update *IncomingUpdate, err error) error
 
 	// Fantasy defaults — applied to every AgentCall unless overridden per-request.
 	temperature *float64
@@ -75,8 +79,8 @@ func WithDynamicSystemPrompt(fn func(ctx context.Context, update *IncomingUpdate
 }
 
 // WithErrorHandler sets a custom error handler for LLM failures.
-// If nil, the default behavior sends the error message to the user.
-func WithErrorHandler(fn func(ctx context.Context, ch Channel, convID int64, err error) error) EngineOption {
+// If nil, errors are logged but not sent to the user (LLM should use tools to communicate).
+func WithErrorHandler(fn func(ctx context.Context, update *IncomingUpdate, err error) error) EngineOption {
 	return func(e *Engine) { e.errorFn = fn }
 }
 
@@ -116,7 +120,6 @@ func NewEngine(opts ...EngineOption) (*Engine, error) {
 	}
 
 	// Compile the middleware chain around the router.
-	// If the router has no LLM handler, bind Engine.RunLLM as the default.
 	if e.router.llmHandler == nil {
 		e.router.llmHandler = func(ctx context.Context, update *IncomingUpdate) error {
 			return e.RunLLM(ctx, update)
@@ -137,8 +140,7 @@ func (e *Engine) Agent() fantasy.Agent { return e.agent }
 // Memory returns the configured Memory, or nil if not set.
 func (e *Engine) Memory() Memory { return e.memory }
 
-// Close performs graceful shutdown. Currently a no-op placeholder
-// for future resource cleanup (e.g., flushing memory, closing connections).
+// Close performs graceful shutdown.
 func (e *Engine) Close() error { return nil }
 
 // Handle processes an incoming update through the full middleware + routing pipeline.
@@ -168,11 +170,11 @@ type LLMOption func(*llmConfig)
 type llmConfig struct {
 	temperature *float64
 	maxTokens   *int64
-	extraTools  []fantasy.AgentTool   // additional tools for this call
+	extraTools  []fantasy.AgentTool
 	stopWhen    []fantasy.StopCondition
 	prepareStep fantasy.PrepareStepFunction
-	activeTools []string              // filter which tools are active
-	extraMsgs   []fantasy.Message     // prepended before user message
+	activeTools []string
+	extraMsgs   []fantasy.Message
 }
 
 // LLMWithTemperature overrides temperature for this call.
@@ -185,7 +187,7 @@ func LLMWithMaxTokens(n int64) LLMOption {
 	return func(c *llmConfig) { c.maxTokens = &n }
 }
 
-// LLMWithTools adds extra tools for this specific call (appended to agent's tools).
+// LLMWithTools adds extra tools for this specific call.
 func LLMWithTools(tools ...fantasy.AgentTool) LLMOption {
 	return func(c *llmConfig) { c.extraTools = tools }
 }
@@ -205,27 +207,19 @@ func LLMWithExtraMessages(msgs ...fantasy.Message) LLMOption {
 	return func(c *llmConfig) { c.extraMsgs = msgs }
 }
 
-// LLMWithActiveTools filters which tools are active for this call (by name).
+// LLMWithActiveTools filters which tools are active for this call.
 func LLMWithActiveTools(names ...string) LLMOption {
 	return func(c *llmConfig) { c.activeTools = names }
 }
 
-// RunLLM executes the Fantasy agent with conversation memory and streaming support.
-// This is the default LLM handler — pass it to NewRouter as the fallback.
-//
-// Pipeline: load memory → build prompt → call Fantasy → save memory → send reply.
-// Each step respects Engine defaults, which can be overridden per-call via LLMOption.
+// RunLLM executes the Fantasy agent pipeline. This is the default LLM handler.
+// Engine does NOT send the result — LLM sends messages through tools.
 func (e *Engine) RunLLM(ctx context.Context, update *IncomingUpdate, opts ...LLMOption) error {
-	result, err := e.CallLLM(ctx, update, opts...)
-	if err != nil {
-		return err
-	}
-	_ = result // already sent via channel in CallLLM
-	return nil
+	_, err := e.CallLLM(ctx, update, opts...)
+	return err
 }
 
 // RunLLMHandler returns a Handler that calls RunLLM with the given options.
-// Use this to pass to NewRouter as the LLM fallback.
 func (e *Engine) RunLLMHandler(opts ...LLMOption) Handler {
 	return func(ctx context.Context, update *IncomingUpdate) error {
 		return e.RunLLM(ctx, update, opts...)
@@ -236,14 +230,12 @@ func (e *Engine) RunLLMHandler(opts ...LLMOption) Handler {
 // Unlike RunLLM, the caller gets access to the LLMResult for inspection.
 func (e *Engine) CallLLM(ctx context.Context, update *IncomingUpdate, opts ...LLMOption) (*LLMResult, error) {
 	cfg := e.buildLLMConfig(opts)
-	ch := update.Channel
-	convID := update.ConversationID
 
 	// 1. Load memory.
 	memKey := MemoryKey{
 		AgentID:        e.agentID,
 		UserID:         update.UserID,
-		ConversationID: convID,
+		ConversationID: update.ConversationID,
 	}
 	history := e.loadMemory(ctx, memKey)
 
@@ -253,41 +245,42 @@ func (e *Engine) CallLLM(ctx context.Context, update *IncomingUpdate, opts ...LL
 		systemPrompt = e.systemFn(ctx, update)
 	}
 
-	// Prepend extra messages if any.
 	if len(cfg.extraMsgs) > 0 {
 		history = append(history, cfg.extraMsgs...)
 	}
 
 	// Append current user message.
-	history = append(history, fantasy.NewUserMessage(update.Text))
+	if update.Text != "" {
+		history = append(history, fantasy.NewUserMessage(update.Text))
+	}
 
 	// 3. Fire event.
 	e.events.OnLLMStart(ctx, update.UserID, update.Text)
 
-	// 4. Call Fantasy (streaming or blocking).
-	var result *LLMResult
-	var err error
-	if streamer, ok := ch.(StreamingChannel); ok {
-		result, err = e.callLLMStreaming(ctx, streamer, convID, systemPrompt, history, cfg)
-	} else {
-		result, err = e.callLLMBlocking(ctx, ch, convID, systemPrompt, history, cfg)
-	}
+	// 4. Call Fantasy agent.
+	call := e.buildAgentCall(systemPrompt, history, cfg)
+	result, err := e.agent.Generate(ctx, call)
 	if err != nil {
 		e.events.OnError(ctx, err)
-		return nil, e.handleLLMError(ctx, ch, convID, err)
+		if e.errorFn != nil {
+			return nil, e.errorFn(ctx, update, err)
+		}
+		return nil, err
 	}
+
+	responseText := result.Response.Content.Text()
 
 	// 5. Fire end event.
 	usage := TokenUsage{
-		InputTokens:  int(result.Result.TotalUsage.InputTokens),
-		OutputTokens: int(result.Result.TotalUsage.OutputTokens),
+		InputTokens:  int(result.TotalUsage.InputTokens),
+		OutputTokens: int(result.TotalUsage.OutputTokens),
 	}
-	e.events.OnLLMEnd(ctx, update.UserID, result.Text, usage)
+	e.events.OnLLMEnd(ctx, update.UserID, responseText, usage)
 
-	// 6. Save memory (includes tool call steps).
-	e.saveMemory(ctx, memKey, history, result.Result)
+	// 6. Save memory.
+	e.saveMemory(ctx, memKey, history, result)
 
-	return result, nil
+	return &LLMResult{Text: responseText, Result: result}, nil
 }
 
 func (e *Engine) buildLLMConfig(opts []LLMOption) *llmConfig {
@@ -319,10 +312,8 @@ func (e *Engine) saveMemory(ctx context.Context, key MemoryKey, history []fantas
 	if e.memory == nil {
 		return
 	}
-	// Convert history (user messages) + agent result steps into Memory messages.
 	updated := fromFantasyMessages(history)
 
-	// Append all step messages from the agent result to preserve tool call history.
 	for _, step := range result.Steps {
 		for _, msg := range step.Messages {
 			updated = append(updated, fromFantasyMessage(msg))
@@ -332,13 +323,6 @@ func (e *Engine) saveMemory(ctx context.Context, key MemoryKey, history []fantas
 	if err := e.memory.Save(ctx, key, updated); err != nil {
 		slog.Warn("failed to save memory", "err", err, "user_id", key.UserID)
 	}
-}
-
-func (e *Engine) handleLLMError(ctx context.Context, ch Channel, convID int64, err error) error {
-	if e.errorFn != nil {
-		return e.errorFn(ctx, ch, convID, err)
-	}
-	return ch.SendText(ctx, convID, fmt.Sprintf("Sorry, I encountered an error: %s", err.Error()))
 }
 
 func (e *Engine) buildAgentCall(systemPrompt string, history []fantasy.Message, cfg *llmConfig) fantasy.AgentCall {
@@ -351,77 +335,6 @@ func (e *Engine) buildAgentCall(systemPrompt string, history []fantasy.Message, 
 		PrepareStep:     cfg.prepareStep,
 		ActiveTools:     cfg.activeTools,
 	}
-}
-
-func (e *Engine) callLLMBlocking(
-	ctx context.Context,
-	ch Channel,
-	convID int64,
-	systemPrompt string,
-	history []fantasy.Message,
-	cfg *llmConfig,
-) (*LLMResult, error) {
-	call := e.buildAgentCall(systemPrompt, history, cfg)
-	result, err := e.agent.Generate(ctx, call)
-	if err != nil {
-		return nil, err
-	}
-
-	responseText := result.Response.Content.Text()
-	if err := ch.SendText(ctx, convID, responseText); err != nil {
-		return nil, fmt.Errorf("send response: %w", err)
-	}
-
-	return &LLMResult{Text: responseText, Result: result}, nil
-}
-
-func (e *Engine) callLLMStreaming(
-	ctx context.Context,
-	ch StreamingChannel,
-	convID int64,
-	systemPrompt string,
-	history []fantasy.Message,
-	cfg *llmConfig,
-) (*LLMResult, error) {
-	sw, err := ch.StartStream(ctx, convID)
-	if err != nil {
-		// Fall back to blocking.
-		return e.callLLMBlocking(ctx, ch, convID, systemPrompt, history, cfg)
-	}
-
-	var fullText string
-	streamCall := fantasy.AgentStreamCall{
-		Prompt:          systemPrompt,
-		Messages:        history,
-		Temperature:     cfg.temperature,
-		MaxOutputTokens: cfg.maxTokens,
-		StopWhen:        cfg.stopWhen,
-		PrepareStep:     cfg.prepareStep,
-		OnTextDelta: func(_ string, delta string) error {
-			fullText += delta
-			return sw.Push(ctx, delta)
-		},
-		OnToolCall: func(tc fantasy.ToolCallContent) error {
-			e.events.OnToolCall(ctx, tc.ToolName, tc.Input)
-			return nil
-		},
-		OnToolResult: func(tr fantasy.ToolResultContent) error {
-			e.events.OnToolResult(ctx, tr.ToolName, fmt.Sprintf("%v", tr.Result), nil)
-			return nil
-		},
-	}
-
-	result, err := e.agent.Stream(ctx, streamCall)
-	if err != nil {
-		_ = sw.Error(ctx, fmt.Sprintf("Sorry, I encountered an error: %s", err.Error()))
-		return nil, err
-	}
-
-	if err := sw.End(ctx, fullText); err != nil {
-		return nil, fmt.Errorf("end stream: %w", err)
-	}
-
-	return &LLMResult{Text: fullText, Result: result}, nil
 }
 
 // --- Message conversion ---
@@ -437,7 +350,6 @@ func toFantasyMessages(msgs []Message) []fantasy.Message {
 func toFantasyMessage(m Message) fantasy.Message {
 	role := fantasy.MessageRole(m.Role)
 
-	// If Parts are populated, convert them to Fantasy MessageParts.
 	if len(m.Parts) > 0 {
 		parts := make([]fantasy.MessagePart, 0, len(m.Parts))
 		for _, p := range m.Parts {
@@ -460,7 +372,6 @@ func toFantasyMessage(m Message) fantasy.Message {
 		return fantasy.Message{Role: role, Content: parts}
 	}
 
-	// Fallback: simple text message.
 	return fantasy.Message{
 		Role: role,
 		Content: []fantasy.MessagePart{
@@ -518,7 +429,6 @@ func fromFantasyMessage(m fantasy.Message) Message {
 			}
 			parts = append(parts, mp)
 		default:
-			// AsMessagePart fallback for TextPart via interface
 			if tp, ok := fantasy.AsMessagePart[fantasy.TextPart](part); ok {
 				textBuilder.WriteString(tp.Text)
 				parts = append(parts, MessagePart{Type: "text", Text: tp.Text})
@@ -528,7 +438,6 @@ func fromFantasyMessage(m fantasy.Message) Message {
 
 	msg.Content = textBuilder.String()
 
-	// Only store Parts if there's more than just text.
 	hasNonText := false
 	for _, p := range parts {
 		if p.Type != "text" {

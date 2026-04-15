@@ -5,5 +5,4 @@
 //   - Sensitive field redaction (proto reflection, scanned once at startup)
 //   - ProtoJSON lazy zap field (zero-cost when log level is disabled)
 //   - Connect RPC logging interceptor (client and server side)
-//   - Business error construction and parsing (ErrorDetail)
 package nxproto

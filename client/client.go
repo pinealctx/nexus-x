@@ -1,6 +1,9 @@
 // Package client provides the Nexus IM client SDK for Agent developers.
-// This is the ONLY package in nexus-x that imports nexus-proto.
+// This is the ONLY package in nexus-x that imports nexus-proto service clients.
 // It implements agentic.Channel and agentic.StreamingChannel.
+//
+// For advanced use cases, access the underlying Connect RPC service clients
+// directly via the Services() method.
 package client
 
 import (
@@ -26,18 +29,25 @@ type Client struct {
 	token      string
 	secretKey  string
 	serverAddr string
-
-	messages      apiv1connect.MessageServiceClient
-	auth          apiv1connect.AuthServiceClient
-	users         apiv1connect.UserServiceClient
-	conversations apiv1connect.ConversationServiceClient
-	contacts      apiv1connect.ContactServiceClient
-	groups        apiv1connect.GroupServiceClient
-	media         apiv1connect.MediaServiceClient
+	services   Services
 
 	selfMu       sync.Mutex
 	selfID       int32
 	selfResolved bool
+}
+
+// Services holds all Connect RPC service clients.
+type Services struct {
+	Messages      apiv1connect.MessageServiceClient
+	Auth          apiv1connect.AuthServiceClient
+	Users         apiv1connect.UserServiceClient
+	Conversations apiv1connect.ConversationServiceClient
+	Contacts      apiv1connect.ContactServiceClient
+	Groups        apiv1connect.GroupServiceClient
+	Media         apiv1connect.MediaServiceClient
+	Agents        apiv1connect.AgentServiceClient
+	Push          apiv1connect.PushServiceClient
+	Sync          apiv1connect.SyncServiceClient
 }
 
 var (
@@ -64,11 +74,6 @@ func WithHTTPClient(c *http.Client) Option {
 }
 
 // New creates a Nexus IM client.
-//
-//	c := client.New("nxa_xxx", "https://nexus.example.com")
-//	c := client.New("nxa_xxx", "https://nexus.example.com",
-//	    client.WithSecretKey("sk_xxx"),
-//	)
 func New(token, serverAddr string, opts ...Option) *Client {
 	o := &options{
 		httpClient: &http.Client{Timeout: 30 * time.Second},
@@ -83,17 +88,27 @@ func New(token, serverAddr string, opts ...Option) *Client {
 	}
 
 	return &Client{
-		token:         token,
-		secretKey:     o.secretKey,
-		serverAddr:    serverAddr,
-		messages:      apiv1connect.NewMessageServiceClient(o.httpClient, serverAddr, connOpts...),
-		auth:          apiv1connect.NewAuthServiceClient(o.httpClient, serverAddr, connOpts...),
-		users:         apiv1connect.NewUserServiceClient(o.httpClient, serverAddr, connOpts...),
-		conversations: apiv1connect.NewConversationServiceClient(o.httpClient, serverAddr, connOpts...),
-		contacts:      apiv1connect.NewContactServiceClient(o.httpClient, serverAddr, connOpts...),
-		groups:        apiv1connect.NewGroupServiceClient(o.httpClient, serverAddr, connOpts...),
-		media:         apiv1connect.NewMediaServiceClient(o.httpClient, serverAddr, connOpts...),
+		token:      token,
+		secretKey:  o.secretKey,
+		serverAddr: serverAddr,
+		services: Services{
+			Messages:      apiv1connect.NewMessageServiceClient(o.httpClient, serverAddr, connOpts...),
+			Auth:          apiv1connect.NewAuthServiceClient(o.httpClient, serverAddr, connOpts...),
+			Users:         apiv1connect.NewUserServiceClient(o.httpClient, serverAddr, connOpts...),
+			Conversations: apiv1connect.NewConversationServiceClient(o.httpClient, serverAddr, connOpts...),
+			Contacts:      apiv1connect.NewContactServiceClient(o.httpClient, serverAddr, connOpts...),
+			Groups:        apiv1connect.NewGroupServiceClient(o.httpClient, serverAddr, connOpts...),
+			Media:         apiv1connect.NewMediaServiceClient(o.httpClient, serverAddr, connOpts...),
+			Agents:        apiv1connect.NewAgentServiceClient(o.httpClient, serverAddr, connOpts...),
+			Push:          apiv1connect.NewPushServiceClient(o.httpClient, serverAddr, connOpts...),
+			Sync:          apiv1connect.NewSyncServiceClient(o.httpClient, serverAddr, connOpts...),
+		},
 	}
+}
+
+// Services returns the underlying Connect RPC service clients.
+func (c *Client) Services() *Services {
+	return &c.services
 }
 
 // SelfUserID returns the agent's own user ID, fetching it lazily via
@@ -106,7 +121,7 @@ func (c *Client) SelfUserID(ctx context.Context) (int32, error) {
 		return c.selfID, nil
 	}
 
-	resp, err := c.users.GetProfile(ctx, connect.NewRequest(&apiv1.GetProfileRequest{}))
+	resp, err := c.services.Users.GetProfile(ctx, connect.NewRequest(&apiv1.GetProfileRequest{}))
 	if err != nil {
 		return 0, fmt.Errorf("GetProfile: %w", err)
 	}
@@ -120,123 +135,32 @@ func (c *Client) mustSelfID() int32 {
 	return c.selfID
 }
 
-// --- Outbound (agentic.Channel) ---
+// --- agentic.Channel implementation ---
 
-// SendText sends a Markdown message to a conversation.
-func (c *Client) SendText(ctx context.Context, conversationID int64, text string) error {
-	_, err := c.sendMessage(ctx, conversationID, &sharedv1.MessageBody{
-		Type: sharedv1.MessageType_MESSAGE_TYPE_MARKDOWN,
-		Content: &sharedv1.MessageBody_Markdown{
-			Markdown: &sharedv1.MarkdownContent{RawMarkdown: text},
-		},
-	}, nil)
-	return err
-}
-
-// SendCard sends a structured card to a conversation.
-// Accepts *adaptivecard.Card, []byte (raw JSON), string (raw JSON), or any JSON-serializable value.
-func (c *Client) SendCard(ctx context.Context, conversationID int64, card any) error {
-	cardJSON, err := marshalCard(card)
-	if err != nil {
-		return fmt.Errorf("marshal card: %w", err)
+// SendMessage implements agentic.Channel.
+func (c *Client) SendMessage(ctx context.Context, req *agentic.SendMessageRequest) (*agentic.SendMessageResult, error) {
+	protoReq := &apiv1.SendMessageRequest{
+		ConversationId:  req.ConversationID,
+		Body:            req.Body,
+		ClientMessageId: req.ClientMessageID,
 	}
-	_, err = c.sendMessage(ctx, conversationID, &sharedv1.MessageBody{
-		Type: sharedv1.MessageType_MESSAGE_TYPE_CARD,
-		Content: &sharedv1.MessageBody_Card{
-			Card: &sharedv1.CardContent{
-				CardJson: string(cardJSON),
-			},
-		},
-	}, nil)
-	return err
-}
-
-// AnswerCardAction responds to a card action callback with a toast or alert.
-func (c *Client) AnswerCardAction(ctx context.Context, _ int64, actionID string, card any) error {
-	text := ""
-	if s, ok := card.(string); ok {
-		text = s
-	}
-	req := connect.NewRequest(&apiv1.AnswerCardActionRequest{
-		ActionId:  actionID,
-		Text:      &text,
-		ShowAlert: false,
-	})
-	_, err := c.messages.AnswerCardAction(ctx, req)
-	return err
-}
-
-// AnswerCardActionAlert responds to a card action with an alert dialog.
-func (c *Client) AnswerCardActionAlert(ctx context.Context, actionID string, text string) error {
-	req := connect.NewRequest(&apiv1.AnswerCardActionRequest{
-		ActionId:  actionID,
-		Text:      &text,
-		ShowAlert: true,
-	})
-	_, err := c.messages.AnswerCardAction(ctx, req)
-	return err
-}
-
-// SendMessageResult contains the result of a sent message.
-type SendMessageResult struct {
-	MessageID int64
-	CreatedAt int64
-}
-
-// SendOption configures a SendMessage call.
-type SendOption func(*sendOptions)
-
-type sendOptions struct {
-	replyToMessageID *int64
-	clientMessageID  int64
-}
-
-// WithReplyTo sets the message to reply to.
-func WithReplyTo(messageID int64) SendOption {
-	return func(o *sendOptions) { o.replyToMessageID = &messageID }
-}
-
-// WithClientMessageID sets a client-generated message ID for idempotency.
-func WithClientMessageID(id int64) SendOption {
-	return func(o *sendOptions) { o.clientMessageID = id }
-}
-
-// SendMessage sends a message with full control over the body.
-// For most cases, use SendText or SendCard instead.
-func (c *Client) SendMessage(ctx context.Context, conversationID int64, body *sharedv1.MessageBody, opts ...SendOption) (*SendMessageResult, error) {
-	return c.sendMessage(ctx, conversationID, body, opts)
-}
-
-func (c *Client) sendMessage(ctx context.Context, conversationID int64, body *sharedv1.MessageBody, opts []SendOption) (*SendMessageResult, error) {
-	o := &sendOptions{}
-	for _, opt := range opts {
-		opt(o)
+	if req.ReplyToMessageID != nil {
+		protoReq.ReplyToMessageId = req.ReplyToMessageID
 	}
 
-	req := &apiv1.SendMessageRequest{
-		ConversationId:  conversationID,
-		Body:            body,
-		ClientMessageId: o.clientMessageID,
-	}
-	if o.replyToMessageID != nil {
-		req.ReplyToMessageId = o.replyToMessageID
-	}
-
-	resp, err := c.messages.SendMessage(ctx, connect.NewRequest(req))
+	resp, err := c.services.Messages.SendMessage(ctx, connect.NewRequest(protoReq))
 	if err != nil {
 		return nil, err
 	}
-	return &SendMessageResult{
+	return &agentic.SendMessageResult{
 		MessageID: resp.Msg.GetMessageId(),
 		CreatedAt: resp.Msg.GetCreatedAt(),
 	}, nil
 }
 
-// --- Message operations ---
-
-// EditMessage edits a previously sent message.
+// EditMessage implements agentic.Channel.
 func (c *Client) EditMessage(ctx context.Context, conversationID, messageID int64, newBody *sharedv1.MessageBody) error {
-	_, err := c.messages.EditMessage(ctx, connect.NewRequest(&apiv1.EditMessageRequest{
+	_, err := c.services.Messages.EditMessage(ctx, connect.NewRequest(&apiv1.EditMessageRequest{
 		ConversationId: conversationID,
 		MessageId:      messageID,
 		NewBody:        newBody,
@@ -244,44 +168,33 @@ func (c *Client) EditMessage(ctx context.Context, conversationID, messageID int6
 	return err
 }
 
-// EditMessageText edits a message to new Markdown text.
-func (c *Client) EditMessageText(ctx context.Context, conversationID, messageID int64, text string) error {
-	return c.EditMessage(ctx, conversationID, messageID, &sharedv1.MessageBody{
-		Type: sharedv1.MessageType_MESSAGE_TYPE_MARKDOWN,
-		Content: &sharedv1.MessageBody_Markdown{
-			Markdown: &sharedv1.MarkdownContent{RawMarkdown: text},
-		},
-	})
-}
-
-// EditMessageCard edits a message to a new card.
-func (c *Client) EditMessageCard(ctx context.Context, conversationID, messageID int64, card any) error {
-	cardJSON, err := marshalCard(card)
-	if err != nil {
-		return fmt.Errorf("marshal card: %w", err)
-	}
-	return c.EditMessage(ctx, conversationID, messageID, &sharedv1.MessageBody{
-		Type: sharedv1.MessageType_MESSAGE_TYPE_CARD,
-		Content: &sharedv1.MessageBody_Card{
-			Card: &sharedv1.CardContent{CardJson: string(cardJSON)},
-		},
-	})
-}
-
-// RecallMessage recalls a sent message (visible to all participants).
+// RecallMessage implements agentic.Channel.
 func (c *Client) RecallMessage(ctx context.Context, conversationID, messageID int64) error {
-	_, err := c.messages.RecallMessage(ctx, connect.NewRequest(&apiv1.RecallMessageRequest{
+	_, err := c.services.Messages.RecallMessage(ctx, connect.NewRequest(&apiv1.RecallMessageRequest{
 		ConversationId: conversationID,
 		MessageId:      messageID,
 	}))
 	return err
 }
 
-// --- Streaming (agentic.StreamingChannel) ---
+// AnswerCardAction implements agentic.Channel.
+func (c *Client) AnswerCardAction(ctx context.Context, conversationID, messageID int64, actionID string, text string, showAlert bool) error {
+	req := connect.NewRequest(&apiv1.AnswerCardActionRequest{
+		ConversationId: conversationID,
+		MessageId:      messageID,
+		ActionId:       actionID,
+		Text:           &text,
+		ShowAlert:      showAlert,
+	})
+	_, err := c.services.Messages.AnswerCardAction(ctx, req)
+	return err
+}
 
-// StartStream begins a streaming message and returns a StreamWriter.
+// --- agentic.StreamingChannel implementation ---
+
+// StartStream implements agentic.StreamingChannel.
 func (c *Client) StartStream(ctx context.Context, conversationID int64) (agentic.StreamWriter, error) {
-	resp, err := c.messages.SendMessage(ctx, connect.NewRequest(&apiv1.SendMessageRequest{
+	resp, err := c.services.Messages.SendMessage(ctx, connect.NewRequest(&apiv1.SendMessageRequest{
 		ConversationId: conversationID,
 		Body: &sharedv1.MessageBody{
 			Type: sharedv1.MessageType_MESSAGE_TYPE_STREAM,
@@ -306,7 +219,7 @@ type streamWriter struct {
 
 func (w *streamWriter) Push(ctx context.Context, delta string) error {
 	w.seq++
-	_, err := w.client.messages.PushStreamDelta(ctx, connect.NewRequest(&apiv1.PushStreamDeltaRequest{
+	_, err := w.client.services.Messages.PushStreamDelta(ctx, connect.NewRequest(&apiv1.PushStreamDeltaRequest{
 		ConversationId: w.conversationID,
 		MessageId:      w.messageID,
 		Seq:            w.seq,
@@ -316,7 +229,7 @@ func (w *streamWriter) Push(ctx context.Context, delta string) error {
 }
 
 func (w *streamWriter) End(ctx context.Context, accumulatedText string) error {
-	_, err := w.client.messages.EndStream(ctx, connect.NewRequest(&apiv1.EndStreamRequest{
+	_, err := w.client.services.Messages.EndStream(ctx, connect.NewRequest(&apiv1.EndStreamRequest{
 		ConversationId:  w.conversationID,
 		MessageId:       w.messageID,
 		AccumulatedText: accumulatedText,
@@ -325,7 +238,7 @@ func (w *streamWriter) End(ctx context.Context, accumulatedText string) error {
 }
 
 func (w *streamWriter) Error(ctx context.Context, errMsg string) error {
-	_, err := w.client.messages.ErrorStream(ctx, connect.NewRequest(&apiv1.ErrorStreamRequest{
+	_, err := w.client.services.Messages.ErrorStream(ctx, connect.NewRequest(&apiv1.ErrorStreamRequest{
 		ConversationId: w.conversationID,
 		MessageId:      w.messageID,
 		ErrorMessage:   errMsg,
@@ -336,7 +249,7 @@ func (w *streamWriter) Error(ctx context.Context, errMsg string) error {
 // --- Gateway URL discovery ---
 
 func (c *Client) fetchGatewayURL(ctx context.Context) (string, error) {
-	resp, err := c.auth.GetClientConfig(ctx, connect.NewRequest(&apiv1.GetClientConfigRequest{}))
+	resp, err := c.services.Auth.GetClientConfig(ctx, connect.NewRequest(&apiv1.GetClientConfigRequest{}))
 	if err != nil {
 		return "", fmt.Errorf("GetClientConfig: %w", err)
 	}

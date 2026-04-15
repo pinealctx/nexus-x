@@ -22,8 +22,8 @@ type TokenUsage struct {
 // Embed it to implement only the methods you care about.
 type NoopEventHandler struct{}
 
-func (NoopEventHandler) OnLLMStart(context.Context, int32, string)              {}
-func (NoopEventHandler) OnLLMEnd(context.Context, int32, string, TokenUsage)    {}
-func (NoopEventHandler) OnToolCall(context.Context, string, string)             {}
-func (NoopEventHandler) OnToolResult(context.Context, string, string, error)    {}
-func (NoopEventHandler) OnError(context.Context, error)                         {}
+func (NoopEventHandler) OnLLMStart(context.Context, int32, string)           {}
+func (NoopEventHandler) OnLLMEnd(context.Context, int32, string, TokenUsage) {}
+func (NoopEventHandler) OnToolCall(context.Context, string, string)          {}
+func (NoopEventHandler) OnToolResult(context.Context, string, string, error) {}
+func (NoopEventHandler) OnError(context.Context, error)                      {}

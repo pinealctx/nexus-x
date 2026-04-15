@@ -3,7 +3,85 @@ package agentic
 import (
 	"context"
 	"log/slog"
+
+	sharedv1 "github.com/pinealctx/nexus-proto/gen/go/shared/v1"
+
+	"github.com/pinealctx/nexus-x/nxutil"
 )
+
+// AgentFilterMiddleware filters messages based on Agent conversation rules:
+//   - Self-messages (sent by the agent itself) are always skipped.
+//   - Private chat: process all non-self messages.
+//   - Group chat: only process messages that @mention the agent (by user ID or @all).
+//   - CardAction events: always pass through (they are explicit user interactions).
+//
+// selfID is the agent's own user ID (from client.SelfUserID).
+func AgentFilterMiddleware(selfID int32) Middleware {
+	return func(next Handler) Handler {
+		return func(ctx context.Context, update *IncomingUpdate) error {
+			// CardAction events always pass through.
+			if update.CardAction != nil {
+				return next(ctx, update)
+			}
+
+			// Non-message events pass through.
+			if update.Envelope == nil {
+				return next(ctx, update)
+			}
+
+			// Skip self-messages.
+			if update.UserID == selfID {
+				return nil
+			}
+
+			// Private chat: process all non-self messages.
+			if nxutil.IsPrivateConversation(update.ConversationID) {
+				return next(ctx, update)
+			}
+
+			// Group chat: only process if agent is mentioned.
+			if isMentioned(update.Envelope, selfID) {
+				return next(ctx, update)
+			}
+
+			// Group message without @mention — skip silently.
+			return nil
+		}
+	}
+}
+
+// isMentioned checks if the message mentions the given user ID or uses @all.
+func isMentioned(env *sharedv1.MessageEnvelope, userID int32) bool {
+	if env == nil || env.Body == nil {
+		return false
+	}
+
+	var entities []*sharedv1.MessageEntity
+	switch body := env.Body.Content.(type) {
+	case *sharedv1.MessageBody_Text:
+		if body.Text != nil {
+			entities = body.Text.Entities
+		}
+	case *sharedv1.MessageBody_Markdown:
+		if body.Markdown != nil {
+			entities = body.Markdown.Entities
+		}
+	}
+
+	for _, e := range entities {
+		if e.Type != sharedv1.MessageEntityType_MESSAGE_ENTITY_TYPE_MENTION {
+			continue
+		}
+		m := e.GetMention()
+		if m == nil {
+			continue
+		}
+		if m.IsAll || m.UserId == userID {
+			return true
+		}
+	}
+	return false
+}
 
 // DedupMiddleware filters duplicate messages using the provided Deduplicator.
 func DedupMiddleware(dedup Deduplicator) Middleware {
