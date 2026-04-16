@@ -2,11 +2,12 @@ package agentic
 
 import (
 	"context"
-	"log/slog"
 
 	sharedv1 "github.com/pinealctx/nexus-proto/gen/go/shared/v1"
 
+	"github.com/pinealctx/nexus-x/nxlog"
 	"github.com/pinealctx/nexus-x/nxutil"
+	"go.uber.org/zap"
 )
 
 // AgentFilterMiddleware filters messages based on Agent conversation rules:
@@ -88,9 +89,9 @@ func DedupMiddleware(dedup Deduplicator) Middleware {
 	return func(next Handler) Handler {
 		return func(ctx context.Context, update *IncomingUpdate) error {
 			if update.MessageID != 0 && dedup.IsDuplicate(update.ConversationID, update.MessageID) {
-				slog.Debug("dedup: skipping duplicate message",
-					"conversation_id", update.ConversationID,
-					"message_id", update.MessageID,
+				nxlog.Debug("dedup: skipping duplicate message",
+					zap.Int64("conversation_id", update.ConversationID),
+					zap.Int64("message_id", update.MessageID),
 				)
 				return nil
 			}
@@ -106,7 +107,7 @@ func RateLimitMiddleware(limiter RateLimiter, onLimited Handler) Middleware {
 		return func(ctx context.Context, update *IncomingUpdate) error {
 			allowed, err := limiter.Allow(ctx, update.UserID)
 			if err != nil {
-				slog.Warn("rate limiter error, allowing request", "err", err, "user_id", update.UserID)
+				nxlog.Warn("rate limiter error, allowing request", zap.Error(err), zap.Int32("user_id", update.UserID))
 				return next(ctx, update)
 			}
 			if !allowed {
@@ -127,7 +128,7 @@ func CredentialGateMiddleware(checker CredentialChecker, onMissing Handler) Midd
 		return func(ctx context.Context, update *IncomingUpdate) error {
 			ok, err := checker.Check(ctx, update.UserID)
 			if err != nil {
-				slog.Warn("credential check error", "err", err, "user_id", update.UserID)
+				nxlog.Warn("credential check error", zap.Error(err), zap.Int32("user_id", update.UserID))
 				return next(ctx, update) // fail open
 			}
 			if !ok {
@@ -145,18 +146,18 @@ func CredentialGateMiddleware(checker CredentialChecker, onMissing Handler) Midd
 func LoggingMiddleware() Middleware {
 	return func(next Handler) Handler {
 		return func(ctx context.Context, update *IncomingUpdate) error {
-			slog.Debug("incoming update",
-				"user_id", update.UserID,
-				"conversation_id", update.ConversationID,
-				"message_id", update.MessageID,
-				"text_len", len(update.Text),
+			nxlog.Debug("incoming update",
+				zap.Int32("user_id", update.UserID),
+				zap.Int64("conversation_id", update.ConversationID),
+				zap.Int64("message_id", update.MessageID),
+				zap.Int("text_len", len(update.Text)),
 			)
 			err := next(ctx, update)
 			if err != nil {
-				slog.Error("handler error",
-					"user_id", update.UserID,
-					"conversation_id", update.ConversationID,
-					"err", err,
+				nxlog.Error("handler error",
+					zap.Int32("user_id", update.UserID),
+					zap.Int64("conversation_id", update.ConversationID),
+					zap.Error(err),
 				)
 			}
 			return err
@@ -170,10 +171,10 @@ func RecoveryMiddleware() Middleware {
 		return func(ctx context.Context, update *IncomingUpdate) (err error) {
 			defer func() {
 				if r := recover(); r != nil {
-					slog.Error("panic recovered in handler",
-						"panic", r,
-						"user_id", update.UserID,
-						"conversation_id", update.ConversationID,
+					nxlog.Error("panic recovered in handler",
+						zap.Any("panic", r),
+						zap.Int32("user_id", update.UserID),
+						zap.Int64("conversation_id", update.ConversationID),
 					)
 					if e, ok := r.(error); ok {
 						err = e

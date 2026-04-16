@@ -19,8 +19,9 @@ type Source interface {
 
 // FileSource reads configuration from a local file (YAML or JSON).
 // When a ".local" variant exists (e.g. server.local.yaml for server.yaml),
-// it is used instead — this allows per-developer overrides without
-// touching the committed config file.
+// it is merged on top of the base file as an overlay — fields set in the
+// local file override the base, while unset fields are preserved.
+// This allows per-developer overrides without touching the committed config.
 type FileSource struct {
 	Path string
 }
@@ -30,15 +31,24 @@ func NewFileSource(path string) *FileSource {
 	return &FileSource{Path: path}
 }
 
-// Load reads the config file, preferring the .local variant if it exists.
+// Load reads the base config file.
 func (s *FileSource) Load(_ context.Context) ([]byte, error) {
-	path := s.Path
-	if lp := localPath(path); fileExists(lp) {
-		path = lp
-	}
-	data, err := os.ReadFile(path) //nolint:gosec // config path from CLI flag
+	data, err := os.ReadFile(s.Path) //nolint:gosec // config path from CLI flag
 	if err != nil {
-		return nil, fmt.Errorf("read config file %s: %w", path, err)
+		return nil, fmt.Errorf("read config file %s: %w", s.Path, err)
+	}
+	return data, nil
+}
+
+// LoadOverlay reads the ".local" variant if it exists, otherwise returns nil.
+func (s *FileSource) LoadOverlay(_ context.Context) ([]byte, error) {
+	lp := localPath(s.Path)
+	if !fileExists(lp) {
+		return nil, nil
+	}
+	data, err := os.ReadFile(lp) //nolint:gosec // config path from CLI flag
+	if err != nil {
+		return nil, fmt.Errorf("read overlay config file %s: %w", lp, err)
 	}
 	return data, nil
 }

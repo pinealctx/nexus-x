@@ -22,8 +22,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 
+	"dario.cat/mergo"
 	"gopkg.in/yaml.v3"
 )
 
@@ -52,6 +54,13 @@ func Load(ctx context.Context, cfg Config, source Source) error {
 	return LoadAs(ctx, cfg, source, FormatAuto)
 }
 
+// OverlayLoader is optionally implemented by Source to provide overlay config bytes.
+// When a source implements OverlayLoader, LoadAs merges the overlay on top of the
+// base configuration — fields set in the overlay override the base.
+type OverlayLoader interface {
+	LoadOverlay(ctx context.Context) ([]byte, error)
+}
+
 // LoadAs is like Load but with an explicit format override.
 func LoadAs(ctx context.Context, cfg Config, source Source, format Format) error {
 	data, err := source.Load(ctx)
@@ -66,6 +75,24 @@ func LoadAs(ctx context.Context, cfg Config, source Source, format Format) error
 	if err = unmarshal(data, cfg, format); err != nil {
 		return fmt.Errorf("parse config: %w", err)
 	}
+
+	// Apply overlay if available.
+	if ol, ok := source.(OverlayLoader); ok {
+		overlay, oerr := ol.LoadOverlay(ctx)
+		if oerr != nil {
+			return fmt.Errorf("load overlay config: %w", oerr)
+		}
+		if overlay != nil {
+			overlayCfg := reflect.New(reflect.ValueOf(cfg).Elem().Type()).Interface()
+			if err = unmarshal(overlay, overlayCfg, format); err != nil {
+				return fmt.Errorf("parse overlay config: %w", err)
+			}
+			if err = mergo.Merge(cfg, overlayCfg, mergo.WithOverride); err != nil {
+				return fmt.Errorf("merge overlay config: %w", err)
+			}
+		}
+	}
+
 	cfg.SetDefaults()
 	if err = cfg.Validate(); err != nil {
 		return fmt.Errorf("validate config: %w", err)
@@ -73,12 +100,12 @@ func LoadAs(ctx context.Context, cfg Config, source Source, format Format) error
 	return nil
 }
 
-func unmarshal(data []byte, cfg Config, format Format) error {
+func unmarshal(data []byte, v any, format Format) error {
 	switch format {
 	case FormatJSON:
-		return json.Unmarshal(data, cfg)
+		return json.Unmarshal(data, v)
 	default:
-		return yaml.Unmarshal(data, cfg)
+		return yaml.Unmarshal(data, v)
 	}
 }
 

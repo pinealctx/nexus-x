@@ -9,10 +9,12 @@ package client
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/pinealctx/nexus-x/nxlog"
+	"go.uber.org/zap"
 
 	"connectrpc.com/connect"
 	apiv1 "github.com/pinealctx/nexus-proto/gen/go/api/v1"
@@ -127,7 +129,7 @@ func (c *Client) SelfUserID(ctx context.Context) (int32, error) {
 	}
 	c.selfID = resp.Msg.GetProfile().GetUserId()
 	c.selfResolved = true
-	slog.Info("resolved self user ID", "user_id", c.selfID)
+	nxlog.Info("resolved self user ID", zap.Int32("user_id", c.selfID))
 	return c.selfID, nil
 }
 

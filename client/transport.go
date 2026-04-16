@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -13,6 +12,8 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/pinealctx/nexus-x/agentic"
+	"github.com/pinealctx/nexus-x/nxlog"
+	"go.uber.org/zap"
 )
 
 // --- Webhook ---
@@ -38,7 +39,7 @@ func (h *webhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
 		if _, err := h.client.SelfUserID(ctx); err != nil {
-			slog.Error("failed to resolve self user ID", "err", err)
+			nxlog.Error("failed to resolve self user ID", zap.Error(err))
 		} else {
 			h.selfResolved = true
 		}
@@ -47,13 +48,13 @@ func (h *webhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
-		slog.Warn("webhook read body failed", "err", err)
+		nxlog.Warn("webhook read body failed", zap.Error(err))
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 
 	if !h.client.verifyWebhook(r, body) {
-		slog.Warn("webhook signature verification failed", "remote_addr", r.RemoteAddr)
+		nxlog.Warn("webhook signature verification failed", zap.String("remote_addr", r.RemoteAddr))
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -62,7 +63,7 @@ func (h *webhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	update, err := h.client.parseWebhook(body)
 	if err != nil {
-		slog.Error("webhook parse failed", "err", err)
+		nxlog.Error("webhook parse failed", zap.Error(err))
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
@@ -82,7 +83,7 @@ func (h *webhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		if err := h.handler(ctx, update); err != nil {
-			slog.Error("handler failed", "err", err)
+			nxlog.Error("handler failed", zap.Error(err))
 		}
 	}()
 }
@@ -144,12 +145,12 @@ type wsClient struct {
 func (w *wsClient) connect(ctx context.Context) error {
 	backoff := time.Second
 	for {
-		slog.Info("ws connecting", "gateway_url", w.cfg.gatewayURL)
+		nxlog.Info("ws connecting", zap.String("gateway_url", w.cfg.gatewayURL))
 		if err := w.dial(ctx); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			slog.Warn("ws connect failed, retrying", "err", err, "retry_in", backoff)
+			nxlog.Warn("ws connect failed, retrying", zap.Error(err), zap.Duration("retry_in", backoff))
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -175,13 +176,13 @@ func (w *wsClient) dial(ctx context.Context) error {
 	w.mu.Lock()
 	w.conn = conn
 	w.mu.Unlock()
-	slog.Info("ws connected")
+	nxlog.Info("ws connected")
 	defer func() {
 		_ = conn.CloseNow()
 		w.mu.Lock()
 		w.conn = nil
 		w.mu.Unlock()
-		slog.Info("ws disconnected")
+		nxlog.Info("ws disconnected")
 	}()
 
 	return w.readLoop(ctx, conn)
@@ -197,7 +198,7 @@ func (w *wsClient) readLoop(ctx context.Context, conn *websocket.Conn) error {
 
 		update, err := w.client.parseWSFrame(data)
 		if err != nil {
-			slog.Error("ws parse frame failed", "err", err)
+			nxlog.Error("ws parse frame failed", zap.Error(err))
 			continue
 		}
 		if update == nil {
@@ -212,7 +213,7 @@ func (w *wsClient) readLoop(ctx context.Context, conn *websocket.Conn) error {
 			dispatchCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 			if err := w.handler(dispatchCtx, update); err != nil {
-				slog.Error("handler failed (ws)", "err", err)
+				nxlog.Error("handler failed (ws)", zap.Error(err))
 			}
 		}()
 	}

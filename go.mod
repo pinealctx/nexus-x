@@ -5,6 +5,7 @@ go 1.26.2
 require (
 	charm.land/fantasy v0.18.0
 	connectrpc.com/connect v1.19.1
+	dario.cat/mergo v1.0.2
 	github.com/aws/aws-sdk-go-v2 v1.41.5
 	github.com/aws/aws-sdk-go-v2/config v1.32.14
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.41.5

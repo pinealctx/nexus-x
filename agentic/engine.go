@@ -3,10 +3,11 @@ package agentic
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"charm.land/fantasy"
+	"github.com/pinealctx/nexus-x/nxlog"
+	"go.uber.org/zap"
 )
 
 // Engine is the central coordinator of the conversational agent framework.
@@ -354,7 +355,7 @@ func (e *Engine) loadMemory(ctx context.Context, key MemoryKey) []fantasy.Messag
 	}
 	msgs, err := e.memory.Load(ctx, key)
 	if err != nil {
-		slog.Warn("failed to load memory", "err", err, "user_id", key.UserID)
+		nxlog.Warn("failed to load memory", zap.Error(err), zap.Int32("user_id", key.UserID))
 		return nil
 	}
 	return toFantasyMessages(msgs)
@@ -373,7 +374,7 @@ func (e *Engine) saveMemory(ctx context.Context, key MemoryKey, history []fantas
 	}
 
 	if err := e.memory.Save(ctx, key, updated); err != nil {
-		slog.Warn("failed to save memory", "err", err, "user_id", key.UserID)
+		nxlog.Warn("failed to save memory", zap.Error(err), zap.Int32("user_id", key.UserID))
 	}
 }
 
