@@ -7,7 +7,6 @@ import (
 	apiv1 "github.com/pinealctx/nexus-proto/gen/go/api/v1"
 	sharedv1 "github.com/pinealctx/nexus-proto/gen/go/shared/v1"
 	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/pinealctx/nexus-x/agentic"
 	"github.com/pinealctx/nexus-x/nxutil"
@@ -30,21 +29,6 @@ func (c *Client) parseWebhook(body []byte) (*agentic.IncomingUpdate, error) {
 		return nil, fmt.Errorf("unmarshal update: %w", err)
 	}
 	return c.convertUpdate(&update), nil
-}
-
-// parseWSFrame parses a Nexus WebSocket ServerFrame proto.
-func (c *Client) parseWSFrame(data []byte) (*agentic.IncomingUpdate, error) {
-	var frame apiv1.ServerFrame
-	if err := proto.Unmarshal(data, &frame); err != nil {
-		return nil, fmt.Errorf("unmarshal server frame: %w", err)
-	}
-
-	updateFrame, ok := frame.Payload.(*apiv1.ServerFrame_Update)
-	if !ok {
-		return nil, nil // heartbeat, auth response, etc.
-	}
-
-	return c.convertUpdate(updateFrame.Update), nil
 }
 
 func (c *Client) convertUpdate(update *apiv1.Update) *agentic.IncomingUpdate {

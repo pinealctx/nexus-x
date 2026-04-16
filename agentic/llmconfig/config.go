@@ -51,12 +51,12 @@ func (c *Config) Validate() error {
 type ProviderType string
 
 const (
-	ProviderAnthropic   ProviderType = "anthropic"
-	ProviderOpenAI      ProviderType = "openai"
-	ProviderAzure       ProviderType = "azure"
-	ProviderGoogle      ProviderType = "google"
-	ProviderBedrock     ProviderType = "bedrock"
-	ProviderOpenRouter  ProviderType = "openrouter"
+	ProviderAnthropic    ProviderType = "anthropic"
+	ProviderOpenAI       ProviderType = "openai"
+	ProviderAzure        ProviderType = "azure"
+	ProviderGoogle       ProviderType = "google"
+	ProviderBedrock      ProviderType = "bedrock"
+	ProviderOpenRouter   ProviderType = "openrouter"
 	ProviderOpenAICompat ProviderType = "openaicompat"
 )
 

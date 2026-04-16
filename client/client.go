@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/pinealctx/nexus-x/nxlog"
+	"github.com/pinealctx/nexus-x/nxproto"
 	"go.uber.org/zap"
 
 	"connectrpc.com/connect"
@@ -84,9 +85,9 @@ func New(token, serverAddr string, opts ...Option) *Client {
 		opt(o)
 	}
 
-	interceptor := bearerInterceptor(token)
+	logging := nxproto.LoggingInterceptor(nxlog.Logger())
 	connOpts := []connect.ClientOption{
-		connect.WithInterceptors(interceptor),
+		connect.WithInterceptors(bearerInterceptor(token), logging),
 	}
 
 	return &Client{

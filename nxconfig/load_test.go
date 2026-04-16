@@ -9,11 +9,11 @@ import (
 
 // testConfig implements Config for testing.
 type testConfig struct {
-	Host    string        `yaml:"host" json:"host"`
-	Port    int           `yaml:"port" json:"port"`
-	Verbose bool          `yaml:"verbose" json:"verbose"`
-	DB      testDBConfig  `yaml:"db" json:"db"`
-	Tags    []string      `yaml:"tags" json:"tags"`
+	Host    string       `yaml:"host" json:"host"`
+	Port    int          `yaml:"port" json:"port"`
+	Verbose bool         `yaml:"verbose" json:"verbose"`
+	DB      testDBConfig `yaml:"db" json:"db"`
+	Tags    []string     `yaml:"tags" json:"tags"`
 }
 
 type testDBConfig struct {
