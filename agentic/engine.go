@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"charm.land/fantasy"
 	"github.com/pinealctx/nexus-x/nxlog"
@@ -139,7 +140,7 @@ func WithPrepareStep(fn fantasy.PrepareStepFunction) EngineOption {
 // NewEngine creates and compiles an Engine with the given options.
 func NewEngine(opts ...EngineOption) (*Engine, error) {
 	e := &Engine{
-		events: NoopEventHandler{},
+		events: LoggingEventHandler{},
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -282,6 +283,7 @@ func (e *Engine) RunLLMHandler(opts ...LLMOption) Handler {
 // Unlike RunLLM, the caller gets access to the LLMResult for inspection.
 func (e *Engine) CallLLM(ctx context.Context, update *IncomingUpdate, opts ...LLMOption) (*LLMResult, error) {
 	cfg := e.buildLLMConfig(opts)
+	start := time.Now()
 
 	// 1. Load memory.
 	memKey := MemoryKey{
@@ -315,6 +317,12 @@ func (e *Engine) CallLLM(ctx context.Context, update *IncomingUpdate, opts ...LL
 	result, err := selectedAgent.Generate(ctx, call)
 	if err != nil {
 		e.events.OnError(ctx, err)
+		nxlog.Error("llm generate failed",
+			zap.Int32("user_id", update.UserID),
+			zap.Int64("conversation_id", update.ConversationID),
+			zap.Duration("elapsed", time.Since(start)),
+			zap.Error(err),
+		)
 		if e.errorFn != nil {
 			return nil, e.errorFn(ctx, update, err)
 		}
@@ -329,6 +337,16 @@ func (e *Engine) CallLLM(ctx context.Context, update *IncomingUpdate, opts ...LL
 		OutputTokens: int(result.TotalUsage.OutputTokens),
 	}
 	e.events.OnLLMEnd(ctx, update.UserID, responseText, usage)
+
+	nxlog.Info("llm generate complete",
+		zap.Int32("user_id", update.UserID),
+		zap.Int64("conversation_id", update.ConversationID),
+		zap.Duration("elapsed", time.Since(start)),
+		zap.Int("steps", len(result.Steps)),
+		zap.Int("input_tokens", usage.InputTokens),
+		zap.Int("output_tokens", usage.OutputTokens),
+		zap.String("response", responseText),
+	)
 
 	// 6. Save memory.
 	e.saveMemory(ctx, memKey, history, result)

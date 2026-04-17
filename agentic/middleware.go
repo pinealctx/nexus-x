@@ -142,15 +142,15 @@ func CredentialGateMiddleware(checker CredentialChecker, onMissing Handler) Midd
 	}
 }
 
-// LoggingMiddleware logs each incoming update at debug level.
+// LoggingMiddleware logs each incoming update at info level.
 func LoggingMiddleware() Middleware {
 	return func(next Handler) Handler {
 		return func(ctx context.Context, update *IncomingUpdate) error {
-			nxlog.Debug("incoming update",
+			nxlog.Info("incoming update",
 				zap.Int32("user_id", update.UserID),
 				zap.Int64("conversation_id", update.ConversationID),
 				zap.Int64("message_id", update.MessageID),
-				zap.Int("text_len", len(update.Text)),
+				zap.String("text", update.Text),
 			)
 			err := next(ctx, update)
 			if err != nil {

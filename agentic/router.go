@@ -3,6 +3,9 @@ package agentic
 import (
 	"context"
 	"strings"
+
+	"github.com/pinealctx/nexus-x/nxlog"
+	"go.uber.org/zap"
 )
 
 // Router dispatches incoming updates to slash commands, keyword rules,
@@ -132,33 +135,41 @@ func (r *Router) OnCardActionDefault(handler Handler) *Router {
 //  3. Keyword rule → first matching rule (registration order)
 //  4. Everything else → LLM fallback
 func (r *Router) Handle(ctx context.Context, update *IncomingUpdate) error {
+	convID := ConversationIDFromContext(ctx)
+
 	// Card action routing.
 	if update.CardAction != nil {
 		verb := update.CardAction.Verb
 		if h, ok := r.cardActions[verb]; ok {
+			nxlog.Info("route: card action", zap.Int64("conversation_id", convID), zap.String("verb", verb))
 			return h(ctx, update)
 		}
 		if r.cardDefault != nil {
+			nxlog.Info("route: card action default", zap.Int64("conversation_id", convID), zap.String("verb", verb))
 			return r.cardDefault(ctx, update)
 		}
+		nxlog.Info("route: card action → LLM", zap.Int64("conversation_id", convID), zap.String("verb", verb))
 		return r.llmHandler(ctx, update)
 	}
 
 	// Slash command routing.
 	if name, ok := parseCommand(update.Text); ok {
 		if cmd, found := r.commands[name]; found {
+			nxlog.Info("route: command", zap.Int64("conversation_id", convID), zap.String("command", name))
 			return cmd.Handler(ctx, update)
 		}
-		// Unknown command — fall through to keyword / LLM.
+		nxlog.Debug("route: unknown command, falling through", zap.Int64("conversation_id", convID), zap.String("command", name))
 	}
 
 	// Keyword routing.
 	for i := range r.keywords {
 		if r.keywords[i].Match(update.Text) {
+			nxlog.Info("route: keyword", zap.Int64("conversation_id", convID))
 			return r.keywords[i].Handler(ctx, update)
 		}
 	}
 
+	nxlog.Info("route: LLM", zap.Int64("conversation_id", convID), zap.String("input", update.Text))
 	return r.llmHandler(ctx, update)
 }
 
