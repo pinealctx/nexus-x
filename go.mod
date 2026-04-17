@@ -12,6 +12,7 @@ require (
 	github.com/coder/websocket v1.8.14
 	github.com/pinealctx/nexus-proto v0.0.6
 	github.com/redis/go-redis/v9 v9.18.0
+	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	github.com/spf13/cobra v1.10.2
 	go.uber.org/zap v1.27.1
 	google.golang.org/protobuf v1.36.11
