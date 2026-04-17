@@ -38,7 +38,7 @@ func LoggingInterceptor(logger *zap.Logger) connect.UnaryInterceptorFunc {
 				} else {
 					respField = zap.Skip()
 				}
-				logger.Debug("rpc",
+				logger.Info("rpc",
 					zap.String("procedure", procedure),
 					reqField,
 					respField,
