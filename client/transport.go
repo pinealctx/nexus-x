@@ -226,11 +226,6 @@ func (w *wsClient) authenticate(ctx context.Context, conn *websocket.Conn) error
 		return fmt.Errorf("write auth: %w", err)
 	}
 
-	nxlog.Debug("ws send frame",
-		zap.String("type", "AUTH_REQUEST"),
-		zap.Int64("req_id", reqID),
-	)
-
 	_, respData, err := conn.Read(authCtx)
 	if err != nil {
 		nxlog.Warn("ws auth read failed", zap.Error(err))
@@ -241,11 +236,6 @@ func (w *wsClient) authenticate(ctx context.Context, conn *websocket.Conn) error
 	if err := proto.Unmarshal(respData, &resp); err != nil {
 		return fmt.Errorf("unmarshal auth response: %w", err)
 	}
-
-	nxlog.Debug("ws recv frame",
-		zap.String("type", resp.Type.String()),
-		zap.Int64("req_id", resp.RequestId),
-	)
 
 	authResp := resp.GetAuthResponse()
 	if authResp == nil || !authResp.GetSuccess() {
@@ -305,11 +295,6 @@ func (w *wsClient) heartbeatLoop(ctx context.Context, conn *websocket.Conn) {
 			cancel()
 			if err != nil {
 				nxlog.Debug("ws heartbeat send failed", zap.Error(err))
-			} else {
-				nxlog.Debug("ws send frame",
-					zap.String("type", "HEARTBEAT_PING"),
-					zap.Int64("req_id", reqID),
-				)
 			}
 		}
 	}
@@ -325,77 +310,75 @@ func (w *wsClient) readLoop(ctx context.Context, conn *websocket.Conn) error {
 
 		var frame apiv1.ServerFrame
 		if err := proto.Unmarshal(data, &frame); err != nil {
-			nxlog.Warn("ws unmarshal server frame failed", zap.Error(err))
+			nxlog.Warn("ws unmarshal failed", zap.Error(err))
 			continue
 		}
 
-		w.dispatchFrame(selfID, &frame)
+		switch frame.Type {
+		case apiv1.ServerFrameType_SERVER_FRAME_TYPE_UPDATE:
+			updateFrame, ok := frame.Payload.(*apiv1.ServerFrame_Update)
+			if !ok || updateFrame == nil {
+				continue
+			}
+			update := w.client.convertUpdate(updateFrame.Update)
+			if update == nil || update.UserID == selfID {
+				continue
+			}
+			nxlog.Info("ws recv update",
+				zap.Int32("user_id", update.UserID),
+				zap.Int64("conversation_id", update.ConversationID),
+				zap.Int64("message_id", update.MessageID),
+				zap.String("text", update.Text),
+			)
+			w.dispatchUpdate(update)
+
+		case apiv1.ServerFrameType_SERVER_FRAME_TYPE_HEARTBEAT_PONG:
+			pong := frame.GetHeartbeatPong()
+			serverTime := int64(0)
+			if pong != nil {
+				serverTime = pong.ServerTime
+			}
+			nxlog.Debug("ws recv pong",
+				zap.Int64("req_id", frame.RequestId),
+				zap.Int64("server_time", serverTime),
+			)
+			w.mu.Lock()
+			w.missedPongs = 0
+			w.mu.Unlock()
+
+		case apiv1.ServerFrameType_SERVER_FRAME_TYPE_ERROR:
+			ef := frame.GetError()
+			if ef == nil {
+				continue
+			}
+			errName := ""
+			if ef.GetError() != nil {
+				errName = ef.GetError().GetErrorName()
+			}
+			nxlog.Warn("ws recv error",
+				zap.Int64("req_id", frame.RequestId),
+				zap.String("error_name", errName),
+				zap.Bool("fatal", ef.GetFatal()),
+			)
+
+		default:
+			nxlog.Debug("ws recv frame",
+				zap.String("type", frame.Type.String()),
+				zap.Int64("req_id", frame.RequestId),
+			)
+		}
 	}
 }
 
-// dispatchFrame routes a ServerFrame to the appropriate handler.
-func (w *wsClient) dispatchFrame(selfID int32, frame *apiv1.ServerFrame) {
-	switch frame.Type {
-	case apiv1.ServerFrameType_SERVER_FRAME_TYPE_UPDATE:
-		updateFrame, ok := frame.Payload.(*apiv1.ServerFrame_Update)
-		if !ok {
-			return
+// dispatchUpdate dispatches a parsed update to the handler in a goroutine.
+func (w *wsClient) dispatchUpdate(update *agentic.IncomingUpdate) {
+	go func() {
+		dispatchCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if err := w.handler(dispatchCtx, update); err != nil {
+			nxlog.Error("handler failed (ws)", zap.Error(err))
 		}
-		update := w.client.convertUpdate(updateFrame.Update)
-		if update == nil || update.UserID == selfID {
-			return
-		}
-		nxlog.Info("ws recv update",
-			zap.Int32("user_id", update.UserID),
-			zap.Int64("conversation_id", update.ConversationID),
-			zap.Int64("message_id", update.MessageID),
-			zap.String("text", update.Text),
-		)
-		go func() {
-			dispatchCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			defer cancel()
-			if err := w.handler(dispatchCtx, update); err != nil {
-				nxlog.Error("handler failed (ws)", zap.Error(err))
-			}
-		}()
-
-	case apiv1.ServerFrameType_SERVER_FRAME_TYPE_HEARTBEAT_PONG:
-		pong := frame.GetHeartbeatPong()
-		serverTime := int64(0)
-		if pong != nil {
-			serverTime = pong.ServerTime
-		}
-		nxlog.Debug("ws recv frame",
-			zap.String("type", "HEARTBEAT_PONG"),
-			zap.Int64("req_id", frame.RequestId),
-			zap.Int64("server_time", serverTime),
-		)
-		w.mu.Lock()
-		w.missedPongs = 0
-		w.mu.Unlock()
-
-	case apiv1.ServerFrameType_SERVER_FRAME_TYPE_ERROR:
-		ef := frame.GetError()
-		if ef == nil {
-			return
-		}
-		errName := ""
-		if ef.GetError() != nil {
-			errName = ef.GetError().GetErrorName()
-		}
-		nxlog.Warn("ws recv frame",
-			zap.String("type", "ERROR"),
-			zap.Int64("req_id", frame.RequestId),
-			zap.String("error_name", errName),
-			zap.Bool("fatal", ef.GetFatal()),
-		)
-
-	default:
-		nxlog.Debug("ws recv frame",
-			zap.String("type", frame.Type.String()),
-			zap.Int64("req_id", frame.RequestId),
-		)
-	}
+	}()
 }
 
 // writeFrame marshals and writes a ClientFrame to the connection.
@@ -405,6 +388,10 @@ func (w *wsClient) writeFrame(ctx context.Context, conn *websocket.Conn, frame *
 	if err != nil {
 		return fmt.Errorf("marshal frame: %w", err)
 	}
+	nxlog.Debug("ws send frame",
+		zap.String("type", frame.Type.String()),
+		zap.Int64("req_id", frame.RequestId),
+	)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return conn.Write(ctx, websocket.MessageBinary, data)
