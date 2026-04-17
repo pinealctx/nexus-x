@@ -15,6 +15,7 @@ import (
 	apiv1 "github.com/pinealctx/nexus-proto/gen/go/api/v1"
 	"github.com/pinealctx/nexus-x/agentic"
 	"github.com/pinealctx/nexus-x/nxlog"
+	"github.com/pinealctx/nexus-x/nxproto"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
@@ -314,6 +315,8 @@ func (w *wsClient) readLoop(ctx context.Context, conn *websocket.Conn) error {
 			continue
 		}
 
+		nxlog.Debug("ws recv", nxproto.ProtoJSON("frame", &frame))
+
 		switch frame.Type {
 		case apiv1.ServerFrameType_SERVER_FRAME_TYPE_UPDATE:
 			updateFrame, ok := frame.Payload.(*apiv1.ServerFrame_Update)
@@ -324,48 +327,18 @@ func (w *wsClient) readLoop(ctx context.Context, conn *websocket.Conn) error {
 			if update == nil || update.UserID == selfID {
 				continue
 			}
-			nxlog.Info("ws recv update",
-				zap.Int32("user_id", update.UserID),
-				zap.Int64("conversation_id", update.ConversationID),
-				zap.Int64("message_id", update.MessageID),
-				zap.String("text", update.Text),
-			)
 			w.dispatchUpdate(update)
 
 		case apiv1.ServerFrameType_SERVER_FRAME_TYPE_HEARTBEAT_PONG:
-			pong := frame.GetHeartbeatPong()
-			serverTime := int64(0)
-			if pong != nil {
-				serverTime = pong.ServerTime
-			}
-			nxlog.Debug("ws recv pong",
-				zap.Int64("req_id", frame.RequestId),
-				zap.Int64("server_time", serverTime),
-			)
 			w.mu.Lock()
 			w.missedPongs = 0
 			w.mu.Unlock()
 
 		case apiv1.ServerFrameType_SERVER_FRAME_TYPE_ERROR:
 			ef := frame.GetError()
-			if ef == nil {
-				continue
+			if ef != nil && ef.GetFatal() {
+				nxlog.Warn("ws recv fatal error", zap.Int64("req_id", frame.RequestId))
 			}
-			errName := ""
-			if ef.GetError() != nil {
-				errName = ef.GetError().GetErrorName()
-			}
-			nxlog.Warn("ws recv error",
-				zap.Int64("req_id", frame.RequestId),
-				zap.String("error_name", errName),
-				zap.Bool("fatal", ef.GetFatal()),
-			)
-
-		default:
-			nxlog.Debug("ws recv frame",
-				zap.String("type", frame.Type.String()),
-				zap.Int64("req_id", frame.RequestId),
-			)
 		}
 	}
 }
@@ -384,14 +357,11 @@ func (w *wsClient) dispatchUpdate(update *agentic.IncomingUpdate) {
 // writeFrame marshals and writes a ClientFrame to the connection.
 // The caller must handle any needed timeout via the ctx.
 func (w *wsClient) writeFrame(ctx context.Context, conn *websocket.Conn, frame *apiv1.ClientFrame) error {
+	nxlog.Debug("ws send", nxproto.ProtoJSON("frame", frame))
 	data, err := proto.Marshal(frame)
 	if err != nil {
 		return fmt.Errorf("marshal frame: %w", err)
 	}
-	nxlog.Debug("ws send frame",
-		zap.String("type", frame.Type.String()),
-		zap.Int64("req_id", frame.RequestId),
-	)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return conn.Write(ctx, websocket.MessageBinary, data)

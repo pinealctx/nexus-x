@@ -141,21 +141,21 @@ func (r *Router) Handle(ctx context.Context, update *IncomingUpdate) error {
 	if update.CardAction != nil {
 		verb := update.CardAction.Verb
 		if h, ok := r.cardActions[verb]; ok {
-			nxlog.Info("route: card action", zap.Int64("conversation_id", convID), zap.String("verb", verb))
+			nxlog.Debug("route: card action", zap.Int64("conversation_id", convID), zap.String("verb", verb))
 			return h(ctx, update)
 		}
 		if r.cardDefault != nil {
-			nxlog.Info("route: card action default", zap.Int64("conversation_id", convID), zap.String("verb", verb))
+			nxlog.Debug("route: card action default", zap.Int64("conversation_id", convID), zap.String("verb", verb))
 			return r.cardDefault(ctx, update)
 		}
-		nxlog.Info("route: card action → LLM", zap.Int64("conversation_id", convID), zap.String("verb", verb))
+		nxlog.Debug("route: card action → LLM", zap.Int64("conversation_id", convID), zap.String("verb", verb))
 		return r.llmHandler(ctx, update)
 	}
 
 	// Slash command routing.
 	if name, ok := parseCommand(update.Text); ok {
 		if cmd, found := r.commands[name]; found {
-			nxlog.Info("route: command", zap.Int64("conversation_id", convID), zap.String("command", name))
+			nxlog.Debug("route: command", zap.Int64("conversation_id", convID), zap.String("command", name))
 			return cmd.Handler(ctx, update)
 		}
 		nxlog.Debug("route: unknown command, falling through", zap.Int64("conversation_id", convID), zap.String("command", name))
@@ -164,12 +164,12 @@ func (r *Router) Handle(ctx context.Context, update *IncomingUpdate) error {
 	// Keyword routing.
 	for i := range r.keywords {
 		if r.keywords[i].Match(update.Text) {
-			nxlog.Info("route: keyword", zap.Int64("conversation_id", convID))
+			nxlog.Debug("route: keyword", zap.Int64("conversation_id", convID))
 			return r.keywords[i].Handler(ctx, update)
 		}
 	}
 
-	nxlog.Info("route: LLM", zap.Int64("conversation_id", convID), zap.String("input", update.Text))
+	nxlog.Debug("route: LLM", zap.Int64("conversation_id", convID), zap.String("input", update.Text))
 	return r.llmHandler(ctx, update)
 }
 

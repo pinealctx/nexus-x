@@ -33,12 +33,12 @@ func (NoopEventHandler) OnToolCall(context.Context, string, string)          {}
 func (NoopEventHandler) OnToolResult(context.Context, string, string, error) {}
 func (NoopEventHandler) OnError(context.Context, error)                      {}
 
-// LoggingEventHandler logs all lifecycle events at Info level.
-// Use it as the default EventHandler for production observability.
+// LoggingEventHandler logs all lifecycle events at Debug level.
+// Opt-in via WithEventHandler(LoggingEventHandler{}).
 type LoggingEventHandler struct{}
 
 func (LoggingEventHandler) OnLLMStart(ctx context.Context, userID int32, input string) {
-	nxlog.Info("llm start",
+	nxlog.Debug("llm start",
 		zap.Int32("user_id", userID),
 		zap.Int64("conversation_id", ConversationIDFromContext(ctx)),
 		zap.String("input", input),
@@ -46,7 +46,7 @@ func (LoggingEventHandler) OnLLMStart(ctx context.Context, userID int32, input s
 }
 
 func (LoggingEventHandler) OnLLMEnd(ctx context.Context, userID int32, response string, tokens TokenUsage) {
-	nxlog.Info("llm end",
+	nxlog.Debug("llm end",
 		zap.Int32("user_id", userID),
 		zap.Int64("conversation_id", ConversationIDFromContext(ctx)),
 		zap.String("response", response),
@@ -56,7 +56,7 @@ func (LoggingEventHandler) OnLLMEnd(ctx context.Context, userID int32, response 
 }
 
 func (LoggingEventHandler) OnToolCall(ctx context.Context, toolName string, input string) {
-	nxlog.Info("llm tool call",
+	nxlog.Debug("llm tool call",
 		zap.Int64("conversation_id", ConversationIDFromContext(ctx)),
 		zap.String("tool", toolName),
 		zap.String("input", input),
@@ -72,7 +72,7 @@ func (LoggingEventHandler) OnToolResult(ctx context.Context, toolName string, ou
 		)
 		return
 	}
-	nxlog.Info("llm tool result",
+	nxlog.Debug("llm tool result",
 		zap.Int64("conversation_id", ConversationIDFromContext(ctx)),
 		zap.String("tool", toolName),
 		zap.String("output", output),

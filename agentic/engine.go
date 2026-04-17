@@ -140,7 +140,7 @@ func WithPrepareStep(fn fantasy.PrepareStepFunction) EngineOption {
 // NewEngine creates and compiles an Engine with the given options.
 func NewEngine(opts ...EngineOption) (*Engine, error) {
 	e := &Engine{
-		events: LoggingEventHandler{},
+		events: NoopEventHandler{},
 	}
 	for _, opt := range opts {
 		opt(e)
@@ -333,7 +333,7 @@ func (e *Engine) CallLLM(ctx context.Context, update *IncomingUpdate, opts ...LL
 	result, err := selectedAgent.Generate(ctx, call)
 	if err != nil {
 		e.events.OnError(ctx, err)
-		nxlog.Error("llm generate failed",
+		nxlog.Debug("llm generate failed",
 			zap.Int32("user_id", update.UserID),
 			zap.Int64("conversation_id", update.ConversationID),
 			zap.Duration("elapsed", time.Since(start)),
@@ -354,7 +354,7 @@ func (e *Engine) CallLLM(ctx context.Context, update *IncomingUpdate, opts ...LL
 	}
 	e.events.OnLLMEnd(ctx, update.UserID, responseText, usage)
 
-	nxlog.Info("llm generate complete",
+	nxlog.Debug("llm generate complete",
 		zap.Int32("user_id", update.UserID),
 		zap.Int64("conversation_id", update.ConversationID),
 		zap.Duration("elapsed", time.Since(start)),
