@@ -10,6 +10,7 @@ import (
 	sharedv1 "github.com/pinealctx/nexus-proto/gen/go/shared/v1"
 
 	"github.com/pinealctx/nexus-x/agentic"
+	"github.com/pinealctx/nexus-x/adaptivecard/validate"
 	"github.com/pinealctx/nexus-x/client"
 )
 
@@ -79,6 +80,10 @@ func SendCard(c *client.Client) fantasy.AgentTool {
 			}
 
 			cardJSON := buildSimpleCardJSON(input)
+			if err := validate.ValidateJSON(cardJSON); err != nil {
+				return fantasy.NewTextErrorResponse(fmt.Sprintf("invalid card: %v", err)), nil
+			}
+
 			body := &sharedv1.MessageBody{
 				Type: sharedv1.MessageType_MESSAGE_TYPE_CARD,
 				Content: &sharedv1.MessageBody_Card{
