@@ -57,7 +57,9 @@ func SendText(c *client.Client) fantasy.AgentTool {
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
-			return fantasy.NewTextResponse(fmt.Sprintf("Message sent (id=%d)", result.MessageID)), nil
+			resp := fantasy.NewTextResponse(fmt.Sprintf("Message sent (id=%d)", result.MessageID))
+			resp.StopTurn = true
+			return resp, nil
 		},
 	)
 }
@@ -102,7 +104,9 @@ func SendCard(c *client.Client) fantasy.AgentTool {
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
-			return fantasy.NewTextResponse(fmt.Sprintf("Card sent (id=%d)", result.MessageID)), nil
+			resp := fantasy.NewTextResponse(fmt.Sprintf("Card sent (id=%d)", result.MessageID))
+			resp.StopTurn = true
+			return resp, nil
 		},
 	)
 }
@@ -180,7 +184,9 @@ func ReplyMessage(c *client.Client) fantasy.AgentTool {
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
-			return fantasy.NewTextResponse(fmt.Sprintf("Reply sent (id=%d)", result.MessageID)), nil
+			resp := fantasy.NewTextResponse(fmt.Sprintf("Reply sent (id=%d)", result.MessageID))
+			resp.StopTurn = true
+			return resp, nil
 		},
 	)
 }
@@ -563,7 +569,9 @@ func SendImage(c *client.Client) fantasy.AgentTool {
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
-			return fantasy.NewTextResponse(fmt.Sprintf("Image sent (id=%d)", result.MessageID)), nil
+			resp := fantasy.NewTextResponse(fmt.Sprintf("Image sent (id=%d)", result.MessageID))
+			resp.StopTurn = true
+			return resp, nil
 		},
 	)
 }
@@ -605,7 +613,9 @@ func SendFile(c *client.Client) fantasy.AgentTool {
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
-			return fantasy.NewTextResponse(fmt.Sprintf("File sent (id=%d)", result.MessageID)), nil
+			resp := fantasy.NewTextResponse(fmt.Sprintf("File sent (id=%d)", result.MessageID))
+			resp.StopTurn = true
+			return resp, nil
 		},
 	)
 }
