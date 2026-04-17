@@ -345,11 +345,11 @@ func (w *wsClient) dispatchFrame(selfID int32, frame *apiv1.ServerFrame) {
 		if update == nil || update.UserID == selfID {
 			return
 		}
-		nxlog.Debug("ws recv frame",
-			zap.String("type", "UPDATE"),
-			zap.Int64("req_id", frame.RequestId),
+		nxlog.Info("ws recv update",
 			zap.Int32("user_id", update.UserID),
 			zap.Int64("conversation_id", update.ConversationID),
+			zap.Int64("message_id", update.MessageID),
+			zap.String("text", update.Text),
 		)
 		go func() {
 			dispatchCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)

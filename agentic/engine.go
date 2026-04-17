@@ -265,11 +265,27 @@ func LLMWithActiveTools(names ...string) LLMOption {
 	return func(c *llmConfig) { c.activeTools = names }
 }
 
-// RunLLM executes the Fantasy agent pipeline. This is the default LLM handler.
-// Engine does NOT send the result — LLM sends messages through tools.
+// RunLLM executes the Fantasy agent pipeline and auto-sends the LLM response.
+// If the LLM produces a non-empty text response, it is sent via the Channel
+// from context. If the LLM already sent messages through tools (e.g. send_text),
+// both the tool-sent message and the final text response are delivered.
 func (e *Engine) RunLLM(ctx context.Context, update *IncomingUpdate, opts ...LLMOption) error {
-	_, err := e.CallLLM(ctx, update, opts...)
-	return err
+	result, err := e.CallLLM(ctx, update, opts...)
+	if err != nil {
+		return err
+	}
+	if result.Text != "" {
+		ch := ChannelFromContext(ctx)
+		if ch != nil {
+			if sendErr := SendText(ctx, ch, update.ConversationID, result.Text); sendErr != nil {
+				nxlog.Warn("failed to auto-send LLM response",
+					zap.Int64("conversation_id", update.ConversationID),
+					zap.Error(sendErr),
+				)
+			}
+		}
+	}
+	return nil
 }
 
 // RunLLMHandler returns a Handler that calls RunLLM with the given options.
