@@ -274,7 +274,7 @@ func (e *Engine) RunLLM(ctx context.Context, update *IncomingUpdate, opts ...LLM
 	if err != nil {
 		return err
 	}
-	if result.Text != "" {
+	if result != nil && result.Text != "" {
 		ch := ChannelFromContext(ctx)
 		if ch != nil {
 			if sendErr := SendText(ctx, ch, update.ConversationID, result.Text); sendErr != nil {
