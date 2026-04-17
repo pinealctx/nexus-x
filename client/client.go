@@ -142,10 +142,14 @@ func (c *Client) mustSelfID() int32 {
 
 // SendMessage implements agentic.Channel.
 func (c *Client) SendMessage(ctx context.Context, req *agentic.SendMessageRequest) (*agentic.SendMessageResult, error) {
+	clientMsgID := req.ClientMessageID
+	if clientMsgID == 0 {
+		clientMsgID = time.Now().UnixNano()
+	}
 	protoReq := &apiv1.SendMessageRequest{
 		ConversationId:  req.ConversationID,
 		Body:            req.Body,
-		ClientMessageId: req.ClientMessageID,
+		ClientMessageId: clientMsgID,
 	}
 	if req.ReplyToMessageID != nil {
 		protoReq.ReplyToMessageId = req.ReplyToMessageID
@@ -198,7 +202,8 @@ func (c *Client) AnswerCardAction(ctx context.Context, conversationID, messageID
 // StartStream implements agentic.StreamingChannel.
 func (c *Client) StartStream(ctx context.Context, conversationID int64) (agentic.StreamWriter, error) {
 	resp, err := c.services.Messages.SendMessage(ctx, connect.NewRequest(&apiv1.SendMessageRequest{
-		ConversationId: conversationID,
+		ConversationId:  conversationID,
+		ClientMessageId: time.Now().UnixNano(),
 		Body: &sharedv1.MessageBody{
 			Type: sharedv1.MessageType_MESSAGE_TYPE_STREAM,
 		},
