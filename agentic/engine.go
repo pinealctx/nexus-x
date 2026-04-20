@@ -204,8 +204,10 @@ func (e *Engine) Handle(ctx context.Context, update *IncomingUpdate) error {
 	ctx = WithUserID(ctx, update.UserID)
 	ctx = WithConversationID(ctx, update.ConversationID)
 	ctx = WithChannel(ctx, update.Channel)
+	ctx = ContextWithAgentID(ctx, e.agentID)
 	if e.memory != nil {
 		ctx = ContextWithMemory(ctx, e.memory)
+		ctx = ContextWithClearFlag(ctx)
 	}
 	return e.handler(ctx, update)
 }
@@ -589,6 +591,22 @@ func (e *Engine) saveMemory(ctx context.Context, key MemoryKey, history []fantas
 	if e.memory == nil {
 		return
 	}
+
+	// If the clear_context tool was called during this turn, discard old
+	// history and save only the new steps from this turn.
+	if IsContextCleared(ctx) {
+		var updated []Message
+		for _, step := range result.Steps {
+			for _, msg := range step.Messages {
+				updated = append(updated, fromFantasyMessage(msg))
+			}
+		}
+		if err := e.memory.Save(ctx, key, updated); err != nil {
+			nxlog.Warn("failed to save memory after clear", zap.Error(err), zap.Int32("user_id", key.UserID))
+		}
+		return
+	}
+
 	updated := fromFantasyMessages(history)
 
 	for _, step := range result.Steps {

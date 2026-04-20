@@ -64,7 +64,7 @@
 //	                         ├─ Build prompt + history
 //	                         ├─ Stream mode?
 //	                         │   ├─ Yes: StartStream → Stream() → Push deltas → End
-//	                         │   └─ No:  Generate() → SendText → FlushDeferred
+//	                         │   └─ No:  Generate() → SendText
 //	                         ├─ (LLM uses tools to send messages)
 //	                         └─ Save memory
 //

@@ -10,6 +10,8 @@ const (
 	keyConversationID
 	keyChannel
 	keyMemory
+	keyAgentID
+	keyClearFlag
 )
 
 // WithUserID stores the user ID in the context.
@@ -54,4 +56,43 @@ func ContextWithMemory(ctx context.Context, m Memory) context.Context {
 func MemoryFromContext(ctx context.Context) Memory {
 	v, _ := ctx.Value(keyMemory).(Memory)
 	return v
+}
+
+// ContextWithAgentID stores the agent ID in the context.
+func ContextWithAgentID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, keyAgentID, id)
+}
+
+// AgentIDFromContext retrieves the agent ID from the context.
+func AgentIDFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(keyAgentID).(string)
+	return v
+}
+
+// clearFlag is a mutable pointer stored in context to signal that
+// conversation memory should be cleared after the current LLM turn.
+// A pointer is needed because context.Context is immutable — mutations
+// via the shared pointer are visible to all holders of the context.
+type clearFlag struct {
+	cleared bool
+}
+
+// ContextWithClearFlag injects a new clear flag into the context.
+func ContextWithClearFlag(ctx context.Context) context.Context {
+	return context.WithValue(ctx, keyClearFlag, &clearFlag{})
+}
+
+// MarkContextCleared signals that memory should be cleared after this turn.
+func MarkContextCleared(ctx context.Context) {
+	if f, _ := ctx.Value(keyClearFlag).(*clearFlag); f != nil {
+		f.cleared = true
+	}
+}
+
+// IsContextCleared reports whether MarkContextCleared was called in this context.
+func IsContextCleared(ctx context.Context) bool {
+	if f, _ := ctx.Value(keyClearFlag).(*clearFlag); f != nil {
+		return f.cleared
+	}
+	return false
 }
