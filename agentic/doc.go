@@ -28,6 +28,8 @@
 //
 //   - [Channel] — Outbound messaging interface. Sends text, cards, images,
 //     files; edits and recalls messages. Implemented by the client package.
+//     StreamingChannel extends Channel with real-time text streaming via
+//     [StreamWriter] (Push/End/Error).
 //
 // # Message Flow
 //
@@ -60,7 +62,9 @@
 //	                         │
 //	                         ├─ Load memory
 //	                         ├─ Build prompt + history
-//	                         ├─ Call Fantasy Agent
+//	                         ├─ Stream mode?
+//	                         │   ├─ Yes: StartStream → Stream() → Push deltas → End
+//	                         │   └─ No:  Generate() → SendText → FlushDeferred
 //	                         ├─ (LLM uses tools to send messages)
 //	                         └─ Save memory
 //
@@ -102,6 +106,7 @@
 //	    agentic.WithAgent(agent),
 //	    agentic.WithRouter(router),
 //	    agentic.WithMemory(agentic.NewInMemoryMemory()),
+//	    agentic.WithStreamMode(), // enable real-time text streaming (optional)
 //	    agentic.WithMiddleware(
 //	        agentic.RecoveryMiddleware(),
 //	        agentic.LoggingMiddleware(),
@@ -124,9 +129,13 @@
 //   - Tier 3 (Group): get_group_info, list_groups, invite_members, remove_member
 //   - Tier 4 (Media): send_image, send_file, get_download_url
 //
-// Engine does NOT send LLM responses automatically — the LLM sends messages
-// through tools (e.g. send_text, send_card), giving it full control over
-// when and how to respond.
+// Engine supports two execution modes:
+//
+//   - Generate mode (default): calls fantasy.Generate(), sends the final text
+//     response as a single message after all steps complete.
+//   - Stream mode: calls fantasy.Stream(), pushes text deltas in real time via
+//     StreamingChannel. Text arrives before tool execution, so natural ordering
+//     is preserved. Enable with [WithStreamMode].
 //
 // [Fantasy]: https://charm.land/fantasy
 package agentic

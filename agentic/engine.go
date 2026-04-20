@@ -29,6 +29,8 @@ type Engine struct {
 	systemFn func(ctx context.Context, update *IncomingUpdate) string
 	errorFn  func(ctx context.Context, update *IncomingUpdate, err error) error
 
+	streamMode bool
+
 	// Fantasy defaults — applied to every AgentCall unless overridden per-request.
 	temperature *float64
 	maxTokens   *int64
@@ -137,6 +139,14 @@ func WithPrepareStep(fn fantasy.PrepareStepFunction) EngineOption {
 	return func(e *Engine) { e.prepareStep = fn }
 }
 
+// WithStreamMode enables streaming mode for LLM responses.
+// When enabled, RunLLM uses fantasy.Stream() to deliver text deltas
+// in real time via StreamingChannel. If the Channel does not implement
+// StreamingChannel, it falls back to Generate mode.
+func WithStreamMode() EngineOption {
+	return func(e *Engine) { e.streamMode = true }
+}
+
 // NewEngine creates and compiles an Engine with the given options.
 func NewEngine(opts ...EngineOption) (*Engine, error) {
 	e := &Engine{
@@ -222,6 +232,7 @@ type llmConfig struct {
 	prepareStep fantasy.PrepareStepFunction
 	activeTools []string
 	extraMsgs   []fantasy.Message
+	streamMode  *bool // overrides Engine.streamMode per-request; nil = use engine default
 }
 
 // LLMWithAgent selects a named agent registered via WithAgents.
@@ -265,27 +276,198 @@ func LLMWithActiveTools(names ...string) LLMOption {
 	return func(c *llmConfig) { c.activeTools = names }
 }
 
+// LLMWithStreamMode overrides stream mode for this specific call.
+func LLMWithStreamMode(enabled bool) LLMOption {
+	return func(c *llmConfig) { c.streamMode = &enabled }
+}
+
 // RunLLM executes the Fantasy agent pipeline and auto-sends the LLM response.
-// If the LLM produces a non-empty text response, it is sent via the Channel
-// from context. If the LLM already sent messages through tools (e.g. send_text),
-// both the tool-sent message and the final text response are delivered.
+// In Generate mode, text is sent first, then any deferred card messages.
+// In Stream mode, text deltas are delivered in real time via StreamingChannel.
 func (e *Engine) RunLLM(ctx context.Context, update *IncomingUpdate, opts ...LLMOption) error {
+	cfg := e.buildLLMConfig(opts)
+	if cfg.isStreamMode() {
+		return e.runLLMStream(ctx, update, cfg, opts)
+	}
+	return e.runLLMGenerate(ctx, update, opts...)
+}
+
+// runLLMGenerate is the Generate mode path (default).
+// Text is sent after Generate() returns.
+func (e *Engine) runLLMGenerate(ctx context.Context, update *IncomingUpdate, opts ...LLMOption) error {
 	result, err := e.CallLLM(ctx, update, opts...)
 	if err != nil {
 		return err
 	}
+	ch := ChannelFromContext(ctx)
+	if ch == nil {
+		return nil
+	}
 	if result != nil && result.Text != "" {
-		ch := ChannelFromContext(ctx)
-		if ch != nil {
-			if sendErr := SendText(ctx, ch, update.ConversationID, result.Text); sendErr != nil {
-				nxlog.Warn("failed to auto-send LLM response",
-					zap.Int64("conversation_id", update.ConversationID),
-					zap.Error(sendErr),
-				)
-			}
+		if sendErr := SendText(ctx, ch, update.ConversationID, result.Text); sendErr != nil {
+			nxlog.Warn("failed to auto-send LLM response",
+				zap.Int64("conversation_id", update.ConversationID),
+				zap.Error(sendErr),
+			)
 		}
 	}
 	return nil
+}
+
+// runLLMStream is the Stream mode path.
+// Text deltas are pushed in real time via StreamingChannel.
+// Tools send cards directly — ordering is naturally correct since
+// text is streamed before tool execution begins.
+func (e *Engine) runLLMStream(ctx context.Context, update *IncomingUpdate, cfg *llmConfig, opts []LLMOption) error {
+	// Check StreamingChannel capability.
+	ch := ChannelFromContext(ctx)
+	if ch == nil {
+		return e.runLLMGenerate(ctx, update, opts...)
+	}
+	sc, ok := ch.(StreamingChannel)
+	if !ok {
+		nxlog.Warn("stream mode: channel does not implement StreamingChannel, falling back to generate mode",
+			zap.Int64("conversation_id", update.ConversationID),
+		)
+		return e.runLLMGenerate(ctx, update, opts...)
+	}
+
+	start := time.Now()
+
+	// 1. Load memory.
+	memKey := MemoryKey{
+		AgentID:        e.agentID,
+		UserID:         update.UserID,
+		ConversationID: update.ConversationID,
+	}
+	history := e.loadMemory(ctx, memKey)
+
+	// 2. Build prompt.
+	var systemPrompt string
+	if e.systemFn != nil {
+		systemPrompt = e.systemFn(ctx, update)
+	}
+	if len(cfg.extraMsgs) > 0 {
+		history = append(history, cfg.extraMsgs...)
+	}
+	if update.Text != "" {
+		history = append(history, fantasy.NewUserMessage(update.Text))
+	}
+
+	// 3. Start stream.
+	sw, err := sc.StartStream(ctx, update.ConversationID)
+	if err != nil {
+		nxlog.Warn("stream mode: StartStream failed, falling back to generate mode",
+			zap.Int64("conversation_id", update.ConversationID),
+			zap.Error(err),
+		)
+		return e.runLLMGenerate(ctx, update, opts...)
+	}
+
+	// 4. Fire event.
+	e.events.OnLLMStart(ctx, update.UserID, update.Text)
+
+	// 5. Build stream call with callbacks.
+	var textBuf strings.Builder
+	streamCall := e.buildAgentStreamCall(systemPrompt, history, cfg, sw, &textBuf)
+
+	// 6. Execute Stream.
+	selectedAgent := e.resolveAgent(cfg.agentName)
+	result, streamErr := selectedAgent.Stream(ctx, streamCall)
+
+	// 7. Terminate the stream.
+	if streamErr != nil {
+		e.events.OnError(ctx, streamErr)
+		_ = sw.Error(ctx, fmt.Sprintf("stream error: %v", streamErr))
+		nxlog.Debug("llm stream failed",
+			zap.Int32("user_id", update.UserID),
+			zap.Int64("conversation_id", update.ConversationID),
+			zap.Duration("elapsed", time.Since(start)),
+			zap.Error(streamErr),
+		)
+		if e.errorFn != nil {
+			return e.errorFn(ctx, update, streamErr)
+		}
+		return streamErr
+	}
+
+	accumulatedText := textBuf.String()
+	if endErr := sw.End(ctx, accumulatedText); endErr != nil {
+		nxlog.Warn("stream mode: failed to end stream",
+			zap.Int64("conversation_id", update.ConversationID),
+			zap.Error(endErr),
+		)
+	}
+
+	// 8. Fire end event + log.
+	responseText := accumulatedText
+	usage := TokenUsage{
+		InputTokens:  int(result.TotalUsage.InputTokens),
+		OutputTokens: int(result.TotalUsage.OutputTokens),
+	}
+	e.events.OnLLMEnd(ctx, update.UserID, responseText, usage)
+
+	nxlog.Debug("llm stream complete",
+		zap.Int32("user_id", update.UserID),
+		zap.Int64("conversation_id", update.ConversationID),
+		zap.Duration("elapsed", time.Since(start)),
+		zap.Int("steps", len(result.Steps)),
+		zap.Int("input_tokens", usage.InputTokens),
+		zap.Int("output_tokens", usage.OutputTokens),
+	)
+
+	// 9. Save memory.
+	e.saveMemory(ctx, memKey, history, result)
+
+	return nil
+}
+
+func (e *Engine) buildAgentStreamCall(
+	systemPrompt string,
+	history []fantasy.Message,
+	cfg *llmConfig,
+	sw StreamWriter,
+	textBuf *strings.Builder,
+) fantasy.AgentStreamCall {
+	return fantasy.AgentStreamCall{
+		// Input fields (same as AgentCall).
+		Prompt:          systemPrompt,
+		Messages:        history,
+		Temperature:     cfg.temperature,
+		MaxOutputTokens: cfg.maxTokens,
+		StopWhen:        cfg.stopWhen,
+		PrepareStep:     cfg.prepareStep,
+		ActiveTools:     cfg.activeTools,
+
+		// Stream callbacks.
+		OnTextDelta: func(id, text string) error {
+			textBuf.WriteString(text)
+			return sw.Push(context.Background(), text)
+		},
+		OnToolCall: func(tc fantasy.ToolCallContent) error {
+			e.events.OnToolCall(context.Background(), tc.ToolName, tc.Input)
+			return nil
+		},
+		OnToolResult: func(tr fantasy.ToolResultContent) error {
+			output := ""
+			var toolErr error
+			if tr.Result != nil {
+				switch o := tr.Result.(type) {
+				case fantasy.ToolResultOutputContentText:
+					output = o.Text
+				case fantasy.ToolResultOutputContentError:
+					output = o.Error.Error()
+					toolErr = o.Error
+				}
+			}
+			e.events.OnToolResult(context.Background(), tr.ToolName, output, toolErr)
+			return nil
+		},
+		OnError: func(err error) {
+			e.events.OnError(context.Background(), err)
+			_ = sw.Error(context.Background(), fmt.Sprintf("stream error: %v", err))
+		},
+	}
 }
 
 // RunLLMHandler returns a Handler that calls RunLLM with the given options.
@@ -380,7 +562,15 @@ func (e *Engine) buildLLMConfig(opts []LLMOption) *llmConfig {
 	for _, opt := range opts {
 		opt(cfg)
 	}
+	if cfg.streamMode == nil && e.streamMode {
+		t := true
+		cfg.streamMode = &t
+	}
 	return cfg
+}
+
+func (c *llmConfig) isStreamMode() bool {
+	return c.streamMode != nil && *c.streamMode
 }
 
 func (e *Engine) loadMemory(ctx context.Context, key MemoryKey) []fantasy.Message {

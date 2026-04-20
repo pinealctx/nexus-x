@@ -2,8 +2,8 @@
 // Adaptive Card JSON Schema and Nexus-specific business rules.
 //
 // Two validation layers:
-//   1. JSON Schema validation (structural correctness against official schema)
-//   2. Nexus business rules (e.g., empty card rejection)
+//  1. JSON Schema validation (structural correctness against official schema)
+//  2. Nexus business rules (e.g., empty card rejection)
 package validate
 
 import (
@@ -102,7 +102,8 @@ func ValidateCard(card *ac.Card) error {
 // schemaError converts a jsonschema.ValidationError into a ValidationError.
 // It extracts the leaf error for the most specific message and path.
 func schemaError(err error) *ValidationError {
-	jsErr, ok := err.(*jsonschema.ValidationError)
+	var jsErr *jsonschema.ValidationError
+	ok := errors.As(err, &jsErr)
 	if !ok {
 		return &ValidationError{
 			Code:    "schema_violation",
