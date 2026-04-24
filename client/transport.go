@@ -182,6 +182,11 @@ func (w *wsClient) dial(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
+
+	// Per-connection context: cancelled when this connection closes,
+	// ensuring the heartbeat goroutine exits promptly on reconnect.
+	connCtx, connCancel := context.WithCancel(ctx)
+
 	w.mu.Lock()
 	w.conn = conn
 	w.mu.Unlock()
@@ -189,6 +194,7 @@ func (w *wsClient) dial(ctx context.Context) error {
 	nxlog.Info("ws connected")
 
 	defer func() {
+		connCancel()
 		_ = conn.CloseNow()
 		w.mu.Lock()
 		w.conn = nil
@@ -197,14 +203,14 @@ func (w *wsClient) dial(ctx context.Context) error {
 	}()
 
 	// Authenticate before entering read loop.
-	if err := w.authenticate(ctx, conn); err != nil {
+	if err := w.authenticate(connCtx, conn); err != nil {
 		return fmt.Errorf("auth: %w", err)
 	}
 
 	// Start heartbeat goroutine.
-	go w.heartbeatLoop(ctx, conn)
+	go w.heartbeatLoop(connCtx, conn)
 
-	return w.readLoop(ctx, conn)
+	return w.readLoop(connCtx, conn)
 }
 
 // authenticate sends an AUTH_REQUEST frame and waits for AUTH_RESPONSE.
