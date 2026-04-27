@@ -380,17 +380,24 @@ func (e *Engine) runLLMStream(ctx context.Context, update *IncomingUpdate, cfg *
 	// 7. Terminate the stream.
 	if streamErr != nil {
 		e.events.OnError(ctx, streamErr)
-		_ = sw.Error(ctx, fmt.Sprintf("stream error: %v", streamErr))
+		errMsg := fmt.Sprintf("stream error: %v", streamErr)
+		if errErr := sw.Error(ctx, errMsg); errErr != nil {
+			nxlog.Warn("stream mode: failed to mark stream error",
+				zap.Int64("conversation_id", update.ConversationID),
+				zap.Error(errErr),
+			)
+			if e.errorFn != nil {
+				return e.errorFn(ctx, update, streamErr)
+			}
+			return streamErr
+		}
 		nxlog.Debug("llm stream failed",
 			zap.Int32("user_id", update.UserID),
 			zap.Int64("conversation_id", update.ConversationID),
 			zap.Duration("elapsed", time.Since(start)),
 			zap.Error(streamErr),
 		)
-		if e.errorFn != nil {
-			return e.errorFn(ctx, update, streamErr)
-		}
-		return streamErr
+		return nil
 	}
 
 	accumulatedText := textBuf.String()
@@ -467,7 +474,6 @@ func (e *Engine) buildAgentStreamCall(
 		},
 		OnError: func(err error) {
 			e.events.OnError(context.Background(), err)
-			_ = sw.Error(context.Background(), fmt.Sprintf("stream error: %v", err))
 		},
 	}
 }
