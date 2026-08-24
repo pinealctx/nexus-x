@@ -2,6 +2,9 @@
 
 Nexus 生态公共 Go 库。提供配置加载、日志、Proto 工具、Adaptive Card 构建器，以及 Agent 引擎和 IM 客户端封装。
 
+> [!NOTE]
+> 本仓库公开维护，为 Nexus 生态提供可复用的 Go 组件。各包仍在持续演进；引入或升级依赖前请核对模块版本和包级文档。
+
 ## Packages
 
 | Package | Description |
@@ -31,4 +34,4 @@ client          ← nexus-proto, connect, nxutil, agentic, websocket, redis
 
 ## 许可证
 
-私有项目。
+本仓库公开可见，但目前尚未授予开源许可证。除非另有说明，所有权利保留；公开访问不代表授予复制、修改、分发或商业使用许可。
